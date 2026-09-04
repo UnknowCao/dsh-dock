@@ -27,6 +27,7 @@
 // Language level: C# 5 (the Windows-bundled .NET Framework 4 csc).
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -69,6 +70,17 @@ static class DshDockProgram
     catch { }
   }
 
+  /** JSON string literal via the serializer (escaping handled). */
+  internal static string JsonStr(string value)
+  {
+    try
+    {
+      return new System.Web.Script.Serialization.JavaScriptSerializer()
+        .Serialize(value ?? "");
+    }
+    catch { return "\"\""; }
+  }
+
   [STAThread]
   static void Main()
   {
@@ -103,7 +115,7 @@ static class DshDockProgram
       if (MarkerActive(cfg.Stopping) && WaitForPortDown(cfg, RaceWaitMs))
       {
         Diag("exit race: port down -> cold card");
-        Application.Run(new DshCard(cfg, coldStart: true));
+        RunColdCard(cfg);
         return;
       }
       // Quick path: open silently — no card UI — the moment the token URL
@@ -124,12 +136,24 @@ static class DshDockProgram
       // wait mode, which surfaces an explicit failure instead of waiting
       // silently for 180 s.
       Diag("quick path exhausted -> wait card");
-      Application.Run(new DshCard(cfg, coldStart: false));
+      Application.Run(new DshCard(cfg, false, CandidateSet.Single(cfg), false));
       return;
     }
 
     Diag("server dead -> cold card");
-    Application.Run(new DshCard(cfg, coldStart: true));
+    RunColdCard(cfg);
+  }
+
+  /**
+   * Cold start entry: run the T2 refresh first so a dsh installed since the
+   * last server boot is already selectable, then let the card pick or start.
+   */
+  static void RunColdCard(LauncherConfig cfg)
+  {
+    bool refreshed = DshDockProgram.RunCandidateRefresh(cfg);
+    CandidateSet cands = CandidateSet.Load(cfg, refreshed);
+    bool stale = cands.HasRealList && !refreshed;
+    Application.Run(new DshCard(cfg, true, cands, stale));
   }
 
   // ── quick-path helpers ───────────────────────────────────────────────────
@@ -262,6 +286,47 @@ static class DshDockProgram
     }
     else Process.Start(url);
   }
+
+  /**
+   * T2 candidate refresh: re-scan every installed dsh right before a cold
+   * start by running the deployed node script (it writes candidates.json and
+   * creates per-candidate batches — content-gated, never a rewrite of the
+   * selection itself). Returns false when refresh cannot run (old ini, node
+   * missing, timeout) so the caller can fall back to the stale list.
+   */
+  internal static bool RunCandidateRefresh(LauncherConfig cfg)
+  {
+    if (string.IsNullOrEmpty(cfg.Node) || string.IsNullOrEmpty(cfg.Refresh)
+      || !File.Exists(cfg.Node) || !File.Exists(cfg.Refresh))
+    {
+      Diag("refresh skipped: node/script missing");
+      return false;
+    }
+    try
+    {
+      var psi = new ProcessStartInfo(cfg.Node, "\"" + cfg.Refresh + "\"")
+      {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+      };
+      Diag("refresh start");
+      Process p = Process.Start(psi);
+      if (p == null) return false;
+      if (!p.WaitForExit(8000))
+      {
+        try { p.Kill(); } catch { }
+        Diag("refresh timeout");
+        return false;
+      }
+      Diag("refresh exit=" + p.ExitCode);
+      return p.ExitCode == 0;
+    }
+    catch (Exception e)
+    {
+      Diag("refresh FAIL: " + e.Message);
+      return false;
+    }
+  }
 }
 
 /** Bake-time configuration, read from %USERPROFILE%\.dsh\launcher\launcher.ini. */
@@ -274,6 +339,11 @@ sealed class LauncherConfig
   public string Stopping;
   public string Lock;
   public string Whale;
+  // v0.3.3 multi-DSH selection support.
+  public string Node;
+  public string Candidates;
+  public string State;
+  public string Refresh;
 
   public int Port
   {
@@ -312,6 +382,10 @@ sealed class LauncherConfig
       else if (key == "STOPPING") cfg.Stopping = value;
       else if (key == "LOCK") cfg.Lock = value;
       else if (key == "WHALE") cfg.Whale = value;
+      else if (key == "NODE") cfg.Node = value;
+      else if (key == "CANDIDATES") cfg.Candidates = value;
+      else if (key == "STATE") cfg.State = value;
+      else if (key == "REFRESH") cfg.Refresh = value;
     }
     if (string.IsNullOrEmpty(cfg.Url) || string.IsNullOrEmpty(cfg.Log)
       || string.IsNullOrEmpty(cfg.Batch) || string.IsNullOrEmpty(cfg.Profile))
@@ -331,6 +405,137 @@ sealed class LauncherConfig
     {
       throw new InvalidOperationException("launcher.ini 的 " + key + " 值不是合法 Base64。");
     }
+  }
+}
+
+/** One selectable dsh installation (one baked batch file each). */
+sealed class CandidateRow
+{
+  public string Id;
+  public string Version;
+  public string Kind;
+  public string Path;
+  public string Label;
+  public string Batch;
+
+  public string BatchPath(LauncherConfig cfg)
+  {
+    // cfg.Batch points at the default start-server.cmd (row 0). Alternates
+    // live next to it under their own names.
+    string dir = System.IO.Path.GetDirectoryName(cfg.Batch);
+    if (string.IsNullOrEmpty(Batch)) return cfg.Batch;
+    if (dir == null) return Batch;
+    return System.IO.Path.Combine(dir, Batch);
+  }
+}
+
+/**
+ * v0.3.3 candidate set — parsed from candidates.json (written by the host at
+ * activation and refreshed by the T2 script before each cold start). Rows are
+ * pre-sorted by the writer (version desc, then kind, then path). A missing or
+ * unreadable file degrades to a single pseudo-candidate pointing at the baked
+ * default batch, so pre-v0.3.3 suites behave exactly as before.
+ */
+sealed class CandidateSet
+{
+  public List<CandidateRow> Rows = new List<CandidateRow>();
+  public bool NpxFallback = false;
+  /** True when rows came from a real candidates.json (not the pseudo default). */
+  public bool HasRealList = false;
+
+  /** Degraded single-candidate set (old ini / missing list / wait-mode card). */
+  public static CandidateSet Single(LauncherConfig cfg)
+  {
+    var s = new CandidateSet();
+    s.Rows.Add(new CandidateRow { Id = "default", Version = "", Kind = "default",
+      Label = "默认", Batch = "" });
+    return s;
+  }
+
+  /** Load candidates.json. refreshOk = the T2 refresh just ran successfully. */
+  public static CandidateSet Load(LauncherConfig cfg, bool refreshOk)
+  {
+    var s = new CandidateSet();
+    if (string.IsNullOrEmpty(cfg.Candidates) || !File.Exists(cfg.Candidates))
+      return Single(cfg);
+    try
+    {
+      string text = File.ReadAllText(cfg.Candidates, System.Text.Encoding.UTF8);
+      var ser = new System.Web.Script.Serialization.JavaScriptSerializer();
+      ser.MaxJsonLength = 1 << 20;
+      var root = ser.DeserializeObject(text) as System.Collections.Generic.Dictionary<string, object>;
+      if (root == null) return Single(cfg);
+      if (root.ContainsKey("candidates"))
+      {
+        var list = root["candidates"] as object[];
+        if (list != null)
+        {
+          foreach (object item in list)
+          {
+            var row = item as System.Collections.Generic.Dictionary<string, object>;
+            if (row == null) continue;
+            var r = new CandidateRow();
+            if (row.ContainsKey("id")) r.Id = Convert.ToString(row["id"]);
+            if (row.ContainsKey("version")) r.Version = Convert.ToString(row["version"]);
+            if (row.ContainsKey("kind")) r.Kind = Convert.ToString(row["kind"]);
+            if (row.ContainsKey("path")) r.Path = Convert.ToString(row["path"]);
+            if (row.ContainsKey("label")) r.Label = Convert.ToString(row["label"]);
+            if (row.ContainsKey("batch")) r.Batch = Convert.ToString(row["batch"]);
+            r.Label = string.IsNullOrEmpty(r.Label) ? "默认" : r.Label;
+            s.Rows.Add(r);
+          }
+        }
+      }
+      if (root.ContainsKey("npxFallback"))
+      {
+        var fb = root["npxFallback"];
+        if (fb != null) s.NpxFallback = true;
+      }
+      if (s.Rows.Count == 0 && !s.NpxFallback)
+      {
+        // candidates.json exists but lists nothing and there is no npx
+        // fallback — degrade to the baked default rather than a dead end.
+        return Single(cfg);
+      }
+      s.HasRealList = true;
+      return s;
+    }
+    catch (Exception e)
+    {
+      DshDockProgram.Diag("candidates parse FAIL: " + e.Message);
+      return Single(cfg);
+    }
+  }
+
+  /** Version of the last successful run (state file), or null. */
+  public static string ReadLastVersion(LauncherConfig cfg)
+  {
+    if (string.IsNullOrEmpty(cfg.State) || !File.Exists(cfg.State)) return null;
+    try
+    {
+      string text = File.ReadAllText(cfg.State, System.Text.Encoding.UTF8);
+      var ser = new System.Web.Script.Serialization.JavaScriptSerializer();
+      var root = ser.DeserializeObject(text) as System.Collections.Generic.Dictionary<string, object>;
+      if (root != null && root.ContainsKey("lastVersion")) return Convert.ToString(root["lastVersion"]);
+    }
+    catch { }
+    return null;
+  }
+
+  /** Persist the last successful (version, path) — called on a real open. */
+  public static void RecordRun(LauncherConfig cfg, CandidateRow row)
+  {
+    if (row == null || string.IsNullOrEmpty(cfg.State)) return;
+    try
+    {
+      string json = "{\"lastVersion\":" + DshDockProgram.JsonStr(row.Version)
+        + ",\"lastPath\":" + DshDockProgram.JsonStr(row.Path)
+        + ",\"updatedAt\":" + DateTime.UtcNow.Ticks + "}";
+      string dir = System.IO.Path.GetDirectoryName(cfg.State);
+      if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
+      System.IO.File.WriteAllText(cfg.State, json, new System.Text.UTF8Encoding(false));
+    }
+    catch { }
   }
 }
 
@@ -373,14 +578,50 @@ sealed class DshCard : Form
   const int W = 340;
   const int HNormal = 184;
   const int HFail = 284;
+  const int HZero = 204;
   const int WhaleW = 84;
+  // v0.3.3 multi-DSH selection on the cold-start card.
+  readonly CandidateSet cands;
+  readonly bool stale;
+  readonly List<CandidateRow> rows = new List<CandidateRow>();
+  readonly ComboBox combo = new ComboBox();
+  readonly Button npxBtn = new Button();
+  readonly Button cancelBtn = new Button();
+  readonly Label staleLbl = new Label();
+  readonly Label autoLbl = new Label();
+  int choiceMode = 0;        // 0 = none/single, 1 = picker, 2 = zero-candidate prompt
+  int chosenIndex = -1;
+  string serverBatch = null;
+  bool chooseDone = false;
+  bool comboOpen = false;
+  DateTime chooseDeadline = DateTime.MaxValue;
+  int lastHintSec = -1;
+  const int ChooseSeconds = 5;
 
-  public DshCard(LauncherConfig config, bool coldStart)
+  public DshCard(LauncherConfig config, bool coldStart, CandidateSet cands, bool stale)
   {
     this.cfg = config;
     this.coldStart = coldStart;
+    this.cands = cands ?? CandidateSet.Single(config);
+    this.stale = stale;
+    rows.AddRange(this.cands.Rows);
     DshDockProgram.Diag("card ctor coldStart=" + coldStart + " port=" + config.Port
-      + " log=" + config.Log);
+      + " log=" + config.Log + " cands=" + rows.Count + " stale=" + stale);
+
+    // Resolve the start target up front. The picker (mode 1) pauses spawn
+    // until the user picks or the countdown fires; the zero-prompt (mode 2)
+    // waits for an explicit npx/cancel click.
+    if (coldStart)
+    {
+      if (rows.Count > 1) choiceMode = 1;
+      else if (rows.Count == 0) choiceMode = 2;
+    }
+    if (choiceMode == 0 && rows.Count > 0)
+    {
+      chosenIndex = 0;
+      serverBatch = rows[0].BatchPath(config);
+      chooseDone = true;
+    }
 
     FormBorderStyle = FormBorderStyle.None;
     StartPosition = FormStartPosition.CenterScreen;
@@ -419,8 +660,10 @@ sealed class DshCard : Form
     closeBtn.Font = new Font("Segoe UI", 9f);
     closeBtn.Text = "关闭";
     closeBtn.Visible = false;
-    closeBtn.Click += delegate { fadeTarget = 0f; };
+    closeBtn.Click += delegate { fadeOut = true; fadeTarget = 0f; };
     Controls.Add(closeBtn);
+
+    SetupChoiceControls();
 
     anim.Interval = 16;
     anim.Tick += delegate
@@ -432,6 +675,7 @@ sealed class DshCard : Form
       if (Math.Abs(d) > 0.003f) Opacity = Math.Max(0, Math.Min(1, Opacity + d * 0.10f));
       else Opacity = fadeTarget;
       if (fadeOut && Opacity <= 0.015) Close();
+      TickChoice();
       Invalidate();
     };
     anim.Start();
@@ -442,7 +686,26 @@ sealed class DshCard : Form
       deadline = DateTime.UtcNow.AddSeconds(180);
       // Provisional first status; the poller's first probe (within ~60ms)
       // refines it — probing here would block this (UI) thread.
-      SetStatus(coldStart ? "正在启动" : "正在连接");
+      if (choiceMode == 2)
+      {
+        Size = new Size(W, HZero);
+        Region = RoundedRegion(W, HZero, 20);
+        SetStatus("未找到任何已安装的 DSH");
+        npxBtn.Visible = true;
+        cancelBtn.Visible = true;
+        // Fetching via npx is a deliberate, networked action — no countdown.
+      }
+      else
+      {
+        SetStatus(coldStart ? "正在启动" : "正在连接");
+        if (choiceMode == 1)
+        {
+          combo.Visible = true;
+          autoLbl.Visible = true;
+          chooseDeadline = DateTime.UtcNow.AddSeconds(ChooseSeconds);
+          lastHintSec = -1;
+        }
+      }
       poller = new Thread(PollerLoop);
       poller.IsBackground = true;
       poller.Name = "dsh-dock-poller";
@@ -481,6 +744,134 @@ sealed class DshCard : Form
     catch { whaleBmp = null; }
   }
 
+  /** Build the choice-phase controls (picker combo / npx prompt / stale hint). */
+  void SetupChoiceControls()
+  {
+    combo.DropDownStyle = ComboBoxStyle.DropDownList;
+    combo.FlatStyle = FlatStyle.Flat;
+    combo.BackColor = Color.FromArgb(32, 37, 48);
+    combo.ForeColor = ink;
+    combo.Font = new Font("Segoe UI", 9f);
+    combo.Location = new Point(26, 98);
+    combo.Size = new Size(214, 24);
+    combo.Visible = false;
+    foreach (CandidateRow r in rows) combo.Items.Add(r.Label);
+    if (rows.Count > 0)
+    {
+      string lastV = cands.HasRealList ? CandidateSet.ReadLastVersion(cfg) : null;
+      int preselect = 0;
+      if (lastV != null)
+      {
+        for (int i = 0; i < rows.Count; i++)
+        {
+          if (rows[i].Version == lastV) { preselect = i; break; }
+        }
+      }
+      combo.SelectedIndex = preselect;
+    }
+    combo.DropDown += delegate
+    {
+      comboOpen = true;
+      autoLbl.Text = "";
+    };
+    combo.DropDownClosed += delegate
+    {
+      comboOpen = false;
+      // Opened but not picked: give the countdown a fresh window.
+      if (choiceMode == 1 && !chooseDone)
+      {
+        chooseDeadline = DateTime.UtcNow.AddSeconds(ChooseSeconds);
+        lastHintSec = -1;
+        autoLbl.Text = "";
+      }
+    };
+    combo.SelectionChangeCommitted += delegate { DoChoose(combo.SelectedIndex); };
+    Controls.Add(combo);
+
+    autoLbl.Location = new Point(246, 100);
+    autoLbl.Size = new Size(68, 20);
+    autoLbl.Font = monoFont;
+    autoLbl.ForeColor = dim;
+    autoLbl.TextAlign = ContentAlignment.MiddleRight;
+    autoLbl.Visible = false;
+    Controls.Add(autoLbl);
+
+    npxBtn.Location = new Point(26, 158);
+    npxBtn.Size = new Size(192, 30);
+    npxBtn.FlatStyle = FlatStyle.Flat;
+    npxBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 76, 88);
+    npxBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(40, 46, 58);
+    npxBtn.BackColor = Color.FromArgb(32, 37, 48);
+    npxBtn.ForeColor = ink;
+    npxBtn.Font = new Font("Segoe UI", 9f);
+    npxBtn.Text = "用 npx 拉取并启动(需联网)";
+    npxBtn.Visible = false;
+    npxBtn.Click += delegate
+    {
+      // cfg.Batch is the canonical npx-fallback batch when no candidate exists.
+      serverBatch = cfg.Batch;
+      chooseDone = true;
+      npxBtn.Visible = false;
+      cancelBtn.Visible = false;
+      autoLbl.Text = "";
+      SetStatus("正在通过 npx 获取最新版…");
+    };
+    Controls.Add(npxBtn);
+
+    cancelBtn.Location = new Point(226, 158);
+    cancelBtn.Size = new Size(88, 30);
+    cancelBtn.FlatStyle = FlatStyle.Flat;
+    cancelBtn.FlatAppearance.BorderColor = Color.FromArgb(70, 76, 88);
+    cancelBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(40, 46, 58);
+    cancelBtn.BackColor = Color.FromArgb(32, 37, 48);
+    cancelBtn.ForeColor = ink;
+    cancelBtn.Font = new Font("Segoe UI", 9f);
+    cancelBtn.Text = "取消";
+    cancelBtn.Visible = false;
+    cancelBtn.Click += delegate { fadeOut = true; fadeTarget = 0f; };
+    Controls.Add(cancelBtn);
+
+    staleLbl.Location = new Point(10, 6);
+    staleLbl.Size = new Size(320, 14);
+    staleLbl.Font = monoFont;
+    staleLbl.ForeColor = dim;
+    staleLbl.Text = "版本列表可能已过期,可能未包含最新安装的 DSH";
+    staleLbl.Visible = stale && cands.HasRealList && choiceMode != 2;
+    Controls.Add(staleLbl);
+  }
+
+  /** 5s auto-start countdown for the picker (mode 1); no-op otherwise. */
+  void TickChoice()
+  {
+    if (choiceMode != 1 || chooseDone || comboOpen) return;
+    double left = (chooseDeadline - DateTime.UtcNow).TotalSeconds;
+    if (left <= 0)
+    {
+      DoChoose(combo.SelectedIndex >= 0 ? combo.SelectedIndex : 0);
+      return;
+    }
+    int secs = (int)Math.Ceiling(left);
+    if (secs != lastHintSec)
+    {
+      lastHintSec = secs;
+      autoLbl.Text = secs + " 秒后自动启动";
+    }
+  }
+
+  /** Lock in the picker selection and allow the spawn path to proceed. */
+  void DoChoose(int index)
+  {
+    if (chooseDone || choiceMode != 1) return;
+    if (index < 0 || index >= rows.Count) index = 0;
+    chosenIndex = index;
+    serverBatch = rows[index].BatchPath(cfg);
+    chooseDone = true;
+    combo.Visible = false;
+    autoLbl.Visible = false;
+    DshDockProgram.Diag("chosen: " + rows[index].Label + " batch=" + serverBatch);
+    SetStatus("正在启动 " + rows[index].Label);
+  }
+
   /** Marshal a UI update onto the message loop (safe once the form is shown). */
   void Ui(MethodInvoker a)
   {
@@ -509,6 +900,12 @@ sealed class DshCard : Form
     DshDockProgram.Diag("card open: " + url);
     opened = true;
     pollerStop = true;
+    // Remember the version that really served the page — the next cold start
+    // preselects it. Only recorded on success, never on a failed pick.
+    if (cands.HasRealList && chosenIndex >= 0 && chosenIndex < rows.Count)
+    {
+      CandidateSet.RecordRun(cfg, rows[chosenIndex]);
+    }
     TryClearSpawnLock();
     DshDockProgram.LaunchEdge(url, cfg.Profile);
     Ui(delegate
@@ -568,6 +965,9 @@ sealed class DshCard : Form
         }
         return;
       }
+      // Multi-DSH / zero-prompt: the user picks (or the countdown fires)
+      // before we may spawn — probes above still detect an external start.
+      if (!chooseDone) return;
       if (probed && !spawned)
       {
         // Settle guard (port must stay down) PLUS a single-spawner lock: the
@@ -679,9 +1079,11 @@ sealed class DshCard : Form
     var sf = new StringFormat();
     sf.Alignment = StringAlignment.Center;
     sf.LineAlignment = StringAlignment.Center;
+    int statusY = (choiceMode == 2) ? 112 : 138;
     using (var brush = new SolidBrush(failing ? danger : dim))
     {
-      g.DrawString(statusText, uiFont, brush, new RectangleF(0, 138, Width, 26), sf);
+      g.DrawString(statusText, uiFont, brush,
+        new RectangleF(0, statusY, Width, 30), sf);
     }
   }
 
@@ -715,7 +1117,9 @@ sealed class DshCard : Form
 
   void StartServer()
   {
-    var pi = new ProcessStartInfo("cmd.exe", "/c \"" + cfg.Batch + "\"")
+    string target = serverBatch ?? cfg.Batch;
+    DshDockProgram.Diag("spawn batch: " + target);
+    var pi = new ProcessStartInfo("cmd.exe", "/c \"" + target + "\"")
     {
       UseShellExecute = false,
       CreateNoWindow = true,

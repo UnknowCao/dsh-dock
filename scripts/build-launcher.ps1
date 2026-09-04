@@ -34,6 +34,7 @@ $compilerArgs = @(
   '/reference:System.Core.dll',
   '/reference:System.Windows.Forms.dll',
   '/reference:System.Drawing.dll',
+  '/reference:System.Web.Extensions.dll',
   $source
 )
 

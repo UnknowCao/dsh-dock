@@ -22,6 +22,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkS
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import { materializeSuite } from './candidates.mjs'
 
 export const name = 'dsh-dock'
 export const inject = ['tools']
@@ -66,6 +67,16 @@ const LEGACY_FILES = [
   // swap-aside copies from copyReplacingLocked — removed once not running
   join(LAUNCHER_DIR, 'dsh-dock-launcher.exe.old'),
 ]
+
+// v0.3.3 multi-DSH: candidate list + per-candidate batches live next to the
+// suite. The exe reads candidates.json to render the picker; the T2 refresh
+// script (deployed copy) is what the exe runs before a cold start.
+const CANDIDATES_FILE = join(LAUNCHER_DIR, 'candidates.json')
+const STATE_FILE = join(LAUNCHER_DIR, 'launcher-state.json')
+const REFRESH_SCRIPT = join(LAUNCHER_DIR, 'dsh-dock-refresh.mjs')
+const REFRESH_MODULE = join(LAUNCHER_DIR, 'candidates.mjs')
+const REFRESH_SCRIPT_ASSET = join(PACKAGE_DIR, 'dsh-dock-refresh.mjs')
+const REFRESH_MODULE_ASSET = join(PACKAGE_DIR, 'candidates.mjs')
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
@@ -220,6 +231,11 @@ function buildLauncherIni(options) {
     `STOPPING=${b64(STOPPING_MARKER)}`,
     `LOCK=${b64(LOCK_FILE)}`,
     `WHALE=${b64(WHALE_PNG)}`,
+    // v0.3.3: node for the T2 refresh, plus the candidate/state data files.
+    `NODE=${b64(options.nodePath ?? process.execPath)}`,
+    `CANDIDATES=${b64(CANDIDATES_FILE)}`,
+    `STATE=${b64(STATE_FILE)}`,
+    `REFRESH=${b64(REFRESH_SCRIPT)}`,
     '',
   ].join('\r\n')
 }
@@ -429,8 +445,49 @@ function resolveAutoOptions() {
   return options
 }
 
+/** Content-gated write: only touch the file when its text differs. */
+function writeIfChanged(file, text) {
+  let current = null
+  try { current = readFileSync(file, 'utf8') } catch { /* absent */ }
+  if (current !== text) writeFileSync(file, text, 'utf8')
+}
+
+/**
+ * Write the whole launcher suite (batch + ini + manifest + exes + icons +
+ * desktop app + the v0.3.3 candidate set). Idempotent by content: every
+ * writer is content-gated, so an unchanged suite costs only a few reads —
+ * no writes, no PowerShell. Always runs (no early skip) so a DSH installed
+ * between boots still lands in candidates.json at the next activation.
+ * @param {object} options - shortcutName/host/port/nodePath/serverArgs/workingDirectory.
+ * @returns {{desktopExePath: string, launcherDir: string, logFile: string, skipped?: boolean}}
+ */
+function installSuite(options) {
+  mkdirSync(LAUNCHER_DIR, { recursive: true })
+  writeIfChanged(INI_FILE, buildLauncherIni(options))
+  ensureDockIcon()
+  copyLauncherExe()
+  removeLegacyFiles()
+  const payload = materializeSuite({
+    nodePath: options.nodePath,
+    launcherDir: LAUNCHER_DIR,
+    logPath: LOG_FILE,
+    errPath: `${LOG_FILE}.err`,
+    port: options.port,
+  })
+  // T2 refresh depends on both modules being next to candidates.json.
+  writeIfChanged(REFRESH_SCRIPT, readFileSync(REFRESH_SCRIPT_ASSET, 'utf8'))
+  writeIfChanged(REFRESH_MODULE, readFileSync(REFRESH_MODULE_ASSET, 'utf8'))
+  const desktopExePath = placeDesktopExe(options)
+  return {
+    desktopExePath,
+    launcherDir: LAUNCHER_DIR,
+    logFile: LOG_FILE,
+    skipped: suiteIsCurrent(options, readManifestSafe(), payload),
+  }
+}
+
 /** Fast path: is the on-disk suite already exactly what options would bake? */
-function suiteIsCurrent(options, manifest) {
+function suiteIsCurrent(options, manifest, payload) {
   try {
     if (manifest === undefined || typeof manifest.desktopDir !== 'string') return false
     if (manifest.host !== options.host || manifest.port !== options.port) return false
@@ -439,40 +496,17 @@ function suiteIsCurrent(options, manifest) {
     if (!existsSync(desktopExe) || !readFileSync(desktopExe).equals(asset)) return false
     if (!existsSync(LAUNCHER_EXE) || !readFileSync(LAUNCHER_EXE).equals(asset)) return false
     if (readFileSync(INI_FILE, 'utf8') !== buildLauncherIni(options)) return false
-    if (readFileSync(BATCH_FILE, 'utf8') !== buildStartBatch(options)) return false
+    if (!existsSync(BATCH_FILE)) return false
+    if (!existsSync(CANDIDATES_FILE) || !existsSync(REFRESH_SCRIPT) || !existsSync(REFRESH_MODULE)) return false
+    if (payload !== undefined) {
+      const live = JSON.parse(readFileSync(CANDIDATES_FILE, 'utf8'))
+      if (JSON.stringify(live.candidates) !== JSON.stringify(payload.candidates)) return false
+    }
     // The card renders from whale.png at runtime — a missing asset must
     // trigger a full install (ensureDockIcon) instead of a skip.
     if (!existsSync(WHALE_PNG)) return false
     return true
   } catch { return false }
-}
-
-/**
- * Write the whole launcher suite (batch + ini + manifest + exes + icons +
- * desktop app). Idempotent: an already-current suite is detected by content
- * comparison and skipped, so running at every activation costs only a few
- * file reads — no PowerShell, no writes.
- * @param {object} options - shortcutName/host/port/nodePath/serverArgs/workingDirectory.
- * @returns {{desktopExePath: string, launcherDir: string, logFile: string, skipped?: boolean}}
- */
-function installSuite(options) {
-  const manifest = readManifestSafe()
-  if (suiteIsCurrent(options, manifest)) {
-    return {
-      desktopExePath: join(manifest.desktopDir, `${options.shortcutName}.exe`),
-      launcherDir: LAUNCHER_DIR,
-      logFile: LOG_FILE,
-      skipped: true,
-    }
-  }
-  mkdirSync(LAUNCHER_DIR, { recursive: true })
-  writeFileSync(BATCH_FILE, buildStartBatch(options), 'utf8')
-  writeFileSync(INI_FILE, buildLauncherIni(options), 'utf8')
-  ensureDockIcon()
-  copyLauncherExe()
-  removeLegacyFiles()
-  const desktopExePath = placeDesktopExe(options)
-  return { desktopExePath, launcherDir: LAUNCHER_DIR, logFile: LOG_FILE }
 }
 
 // ── web sidebar Exit action support ─────────────────────────────────────────

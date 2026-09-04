@@ -119,6 +119,7 @@ Uninstall: delete the desktop `DSH Harness.exe` and `~\.dsh\launcher\`; remove t
 | Guarded / race-free | Two-step Full Exit; double-click right after exit waits for the old process to die before cold-starting; single-instance lock on cold start; port-occupied-but-not-ready fails loudly instead of hanging | Automatic |
 | Single file · no build · zero deps | The desktop entry is the **native exe itself** (not a shortcut); prebuilt and committed — installs need no csc; runtime talks to loopback only | Automatic |
 | Install on activation | ~2s after activation the full suite lands, all parameters (port/Node/start command) auto-detected from the environment; content-compare idempotency, refreshed automatically on plugin upgrade | `dsh plugin add` + restart |
+| Pick which DSH to start | With several dsh installs (global / npx cache / source), the cold-start card shows a picker; no click for 5s auto-uses the last successful version (or the highest); switching never rewrites any file; zero-candidate case offers a one-click npx fetch | Double-click the whale (multi-candidate) |
 
 ---
 
@@ -167,6 +168,8 @@ dsh-dock/
 ├── cordis.patch.yml         # bundle patch: inserts the plugin row into the composition
 ├── package.json             # package manifest (name: dsh-dock)
 ├── regen-launcher.mjs       # maintenance: regenerate the launcher suite outside the harness
+├── candidates.mjs           # shared: multi-DSH detection + suite materialization (activation + T2 refresh)
+├── dsh-dock-refresh.mjs     # cold-start refresh script (T2, run by the exe via node; deployed next to candidates.json)
 ├── src/
 │   └── DshDockLauncher.cs   # the launcher's single implementation: fast-path silent window + cold card + health gate + exit races + single-instance lock
 ├── assets/
@@ -213,6 +216,7 @@ Spend 3 minutes self-verifying after install (every step lists its expected outc
 - **HTTP 200 health gate (with cookie semantics)**: DSH answers a valid token URL with **303 + Set-Cookie → /**; a browser follows it to 200. The gate replicates this chain with a CookieContainer — a stale token (bare 401) never opens a window
 - **Exit/start race absorption**: while `.stopping` is fresh, the launcher waits for the port to die before cold-starting; `.starting.lock` single-instance lock prevents double starts, with a 60s crash takeover
 - **Zero-blocking animation**: the TCP probe (a dead port blocks up to 700ms), the log scrape, and the health-gate HTTP all poll on a background thread — the UI thread only paints, so the breathing lamp stays smooth through the whole cold start, regardless of machine speed
+- **Multi-DSH selection (one baked .cmd per candidate)**: candidates = global prefixes + npx cache (`_npx`) + source checkouts, sorted version → source → path; each candidate owns a batch file, switching only picks which one runs — **never rewrites any .cmd**; before a cold start the exe runs the T2 refresh script (~0.2s) so a dsh installed minutes ago is already selectable; a failed refresh falls back to the stale list flagged "may be outdated"
 - **Fail loudly instead of hanging**: port occupied but the page never 200s → within ~24s it reports "the previous session may not have fully exited" + the log path
 - **Install on activation**: ~2s after `apply()` the full suite lands — the port comes from **the own PID's LISTENING socket** (netstat, ~100ms), Node and the start command via probe chains; when already up to date, content comparison skips ahead (a few file reads — zero PowerShell, zero writes)
 - **Diagnostics hook**: set `DSH_DOCK_DIAG=1` and the launcher appends its decision/crash trail to `%TEMP%\dsh-dock-diag.log` (zero overhead otherwise)

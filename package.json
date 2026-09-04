@@ -1,6 +1,6 @@
 {
   "name": "dsh-dock",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "One-click desktop launcher for DSH Harness: automatically installs a prebuilt native app (DSH Harness.exe, whale icon) on the desktop when the plugin activates (parameters auto-detected from the environment); the app starts DSH hidden and opens the GUI as a fullscreen Edge app window. Also turns the sidebar Settings row into a More menu (Settings / Reload / Exit) where Exit stops the server and auto-closes the window.",
   "license": "MIT",
   "type": "module",
@@ -33,6 +33,8 @@
   "files": [
     "index.js",
     "client.js",
+    "candidates.mjs",
+    "dsh-dock-refresh.mjs",
     "cordis.patch.yml",
     "assets",
     "LICENSE",
