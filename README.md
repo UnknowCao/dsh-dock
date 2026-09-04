@@ -91,10 +91,10 @@ DSH Dock 把整件事收进两个入口:
 前置条件:Windows 10/11 + DSH `web` profile + Edge(缺失时回落默认浏览器)。无需 Node 配置——安装时自动探测可用 Node(≥ 22.19)。
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.3.3
+dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.3.4
 ```
 
-重启服务器后**无需任何操作**:插件激活时自动从环境提取参数(自身监听端口、Node 路径、启动命令),~2 秒内桌面出现「DSH Harness.exe」(黑鲸鱼图标)+ 侧栏「更多」菜单。日常两步:**双击鲸鱼开,菜单里退**。
+重启服务器后**无需任何操作**:插件激活时自动从环境提取参数(自身监听端口、Node 路径、启动命令),~2 秒内桌面出现「DSH Harness.exe」(黑鲸鱼图标)+ 侧栏「更多」菜单。日常两步:**双击鲸鱼开,菜单里退**。「完全退出」现在走优雅退出(整树 dispose 后自然收尾);仅在没有 `ctx.appExit` 的旧宿主上回退为硬杀。
 
 想自定义(改名/换端口)再对 Agent 说:
 

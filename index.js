@@ -738,29 +738,52 @@ export function apply(ctx) {
           writeJson(res, 405, { ok: false, error: { code: 'method-error', message: 'method not allowed' } })
           return
         }
+        const exit = ctx.get('appExit')
         const subprocess = ctx.get('subprocess')
-        if (subprocess === undefined) {
-          writeJson(res, 503, { ok: false, error: { code: 'unavailable', message: 'subprocess service not mounted' } })
+        if (typeof exit !== 'function' && subprocess === undefined) {
+          writeJson(res, 503, { ok: false, error: { code: 'unavailable', message: 'no graceful exit seam (appExit) and no subprocess kill fallback' } })
           return
         }
-        const port = readInstalledPort()
         // Shutdown marker: the launcher waits it out instead of opening the
         // dying server when a double-click lands mid-shutdown. Epoch SECONDS
-        // on purpose: the launcher reads it as a plain number.
+        // on purpose: the launcher reads it as a plain number. Written for
+        // both paths; deliberately never deleted — a stale marker (>15s) is
+        // inert and the next stop overwrites it.
         try {
           mkdirSync(LAUNCHER_DIR, { recursive: true })
           writeFileSync(STOPPING_MARKER, String(Math.floor(Date.now() / 1000)), 'utf8')
         } catch { /* marker is best-effort */ }
-        // Self-kill fast path: when the manifest port matches the port this
-        // request arrived on, the listener IS this process — no lookup
-        // needed. A mismatched manifest (tests) forces the netstat fallback
-        // so this server can never be killed by mistake.
-        const hostAuth = parseAuthority(req.headers.host)
-        const selfPid = hostAuth !== undefined && Number(hostAuth.port) === port
-          ? process.pid
-          : 0
-        dispatchServerStop(subprocess, port, selfPid)
-        writeJson(res, 200, { ok: true, note: `server on port ${port} is stopping; sessions were persisted` })
+        writeJson(res, 200, { ok: true, note: 'server is stopping gracefully; sessions were persisted' })
+        if (typeof exit === 'function') {
+          // Graceful path (ctx.appExit provided by the dsh launcher): dispose
+          // the whole Cordis tree, then let the process exit naturally.
+          // Deferred a beat so the HTTP response can flush and the client's
+          // close-grace window can start first.
+          console.info('[dsh-dock] stop: graceful path via ctx.appExit')
+          setTimeout(() => {
+            console.info('[dsh-dock] stop: requesting appExit(0)')
+            try { exit(0) } catch (e) { console.warn('[dsh-dock] stop: appExit failed:', e && e.message) }
+          }, 600)
+          // Watchdog: if the tree disposes but the event loop never drains,
+          // the natural exit never fires — force it after 7s (later than the
+          // controller's own 5s dispose cap). unref: never keeps the loop
+          // alive by itself, so a healthy natural exit wins the race.
+          const watchdog = setTimeout(() => {
+            console.info('[dsh-dock] stop: watchdog forcing process.exit(0)')
+            process.exit(0)
+          }, 7000)
+          if (typeof watchdog.unref === 'function') watchdog.unref()
+        } else {
+          // Legacy fallback (host without ctx.appExit): hard-kill via a
+          // short-lived PowerShell, exactly as pre-v0.3.4.
+          console.info('[dsh-dock] stop: fallback hard-kill (no ctx.appExit on this host)')
+          const port = readInstalledPort()
+          const hostAuth = parseAuthority(req.headers.host)
+          const selfPid = hostAuth !== undefined && Number(hostAuth.port) === port
+            ? process.pid
+            : 0
+          dispatchServerStop(subprocess, port, selfPid)
+        }
       },
     }), 'dsh-dock: /launcher/api/stop route')
   })

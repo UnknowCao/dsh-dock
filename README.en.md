@@ -93,10 +93,10 @@ A dark translucent rounded glass card; the centered black whale is a breathing l
 Prerequisites: Windows 10/11 + the DSH `web` profile + Edge (falls back to the default browser if missing). No Node setup needed — the installer auto-detects a usable Node (≥ 22.19).
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.3.3
+dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.3.4
 ```
 
-After restarting the server there is **nothing to do**: on activation the plugin extracts its parameters from the environment (its own listening port, Node path, start command); within ~2s the desktop gets "DSH Harness.exe" (black whale icon) and the sidebar gets the "More" menu. Daily routine: **double-click the whale to open, exit from the menu**.
+After restarting the server there is **nothing to do**: on activation the plugin extracts its parameters from the environment (its own listening port, Node path, start command); within ~2s the desktop gets "DSH Harness.exe" (black whale icon) and the sidebar gets the "More" menu. Daily routine: **double-click the whale to open, exit from the menu**. "Full Exit" now shuts the server down gracefully (the whole Cordis tree is disposed before a natural exit); hosts without `ctx.appExit` fall back to the legacy hard kill.
 
 For customization (rename / different port), tell the agent:
 
