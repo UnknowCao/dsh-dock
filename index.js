@@ -63,6 +63,8 @@ const LEGACY_FILES = [
   join(LAUNCHER_DIR, 'start-dsh.hta'),
   join(LAUNCHER_DIR, 'dsh-card.cs'),
   join(LAUNCHER_DIR, 'dsh-card.exe'),
+  // swap-aside copies from copyReplacingLocked — removed once not running
+  join(LAUNCHER_DIR, 'dsh-dock-launcher.exe.old'),
 ]
 
 const POWERSHELL = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -246,6 +248,34 @@ function ensureDockIcon() {
 }
 
 /**
+ * Copy src → dest, tolerating a RUNNING exe at dest: Windows locks the image
+ * of a running process against writes (EBUSY/EPERM), but allows renaming it
+ * out of the way — the classic updater trick. The renamed-aside ".old" copy
+ * is removed on a later install once its process has exited. Without this,
+ * the canonical upgrade flow (menu exit → double-click whale → server boots →
+ * plugin activates) always found the desktop exe locked by the still-running
+ * old launcher, so the desktop copy never upgraded.
+ * @param {string} src - source file (packaged asset).
+ * @param {string} dest - destination file (possibly a running image).
+ */
+function copyReplacingLocked(src, dest) {
+  try {
+    copyFileSync(src, dest)
+  } catch (err) {
+    if (err.code !== 'EBUSY' && err.code !== 'EPERM') throw err
+    const aside = `${dest}.old`
+    try { unlinkSync(aside) } catch { /* an even older swap still running */ }
+    renameSync(dest, aside) // renaming a running image is allowed on Windows
+    try {
+      copyFileSync(src, dest)
+    } catch (err2) {
+      try { renameSync(aside, dest) } catch { /* next install retries the swap */ }
+      throw err2
+    }
+  }
+}
+
+/**
  * Refresh the launcher-suite copy of the prebuilt exe (content-compared so
  * reinstalls upgrade it in place).
  * @returns {string} the launcher-dir exe path.
@@ -257,7 +287,7 @@ function copyLauncherExe() {
   mkdirSync(LAUNCHER_DIR, { recursive: true })
   const current = existsSync(LAUNCHER_EXE) ? readFileSync(LAUNCHER_EXE) : undefined
   const next = readFileSync(LAUNCHER_EXE_ASSET)
-  if (current === undefined || !current.equals(next)) copyFileSync(LAUNCHER_EXE_ASSET, LAUNCHER_EXE)
+  if (current === undefined || !current.equals(next)) copyReplacingLocked(LAUNCHER_EXE_ASSET, LAUNCHER_EXE)
   return LAUNCHER_EXE
 }
 
@@ -292,6 +322,8 @@ function placeDesktopExe(options) {
   if (desktopDir === null || !existsSync(desktopDir)) desktopDir = resolveDesktopDir()
   const desktopExeName = `${options.shortcutName ?? DEFAULT_SHORTCUT_NAME}.exe`
   const desktopExe = join(desktopDir, desktopExeName)
+  // Best-effort: clear a previous swap-aside copy once its process is gone.
+  try { unlinkSync(`${desktopExe}.old`) } catch { /* still running or absent */ }
   const asset = readFileSync(LAUNCHER_EXE_ASSET)
   const marker = Buffer.from(LAUNCHER_MARKER, 'ascii')
   if (existsSync(desktopExe)) {
@@ -307,7 +339,9 @@ function placeDesktopExe(options) {
         + ' (rename or remove it, then re-run the install)',
       )
     }
-    copyFileSync(LAUNCHER_EXE_ASSET, desktopExe) // our older copy: refresh
+    // our older copy: refresh — tolerate the image being locked by a
+    // still-running launcher (swap-aside via rename, see copyReplacingLocked)
+    copyReplacingLocked(LAUNCHER_EXE_ASSET, desktopExe)
   } else {
     copyFileSync(LAUNCHER_EXE_ASSET, desktopExe)
   }
