@@ -326,6 +326,7 @@ static class DshDockProgram
    */
   internal static bool RunCandidateRefresh(LauncherConfig cfg)
   {
+    CandidateSet.EnsureDerivedPaths(cfg);
     if (string.IsNullOrEmpty(cfg.Node) || string.IsNullOrEmpty(cfg.Refresh)
       || !File.Exists(cfg.Node) || !File.Exists(cfg.Refresh))
     {
@@ -473,6 +474,22 @@ sealed class CandidateSet
   /** True when rows came from a real candidates.json (not the pseudo default). */
   public bool HasRealList = false;
 
+  /**
+   * An OLDER plugin release rewrites launcher.ini without the v0.3.3 keys
+   * (NODE/CANDIDATES/STATE/REFRESH) on every server boot, but it does not
+   * delete candidates.json or the deployed refresh script. Derive those
+   * paths from the default batch's directory so the picker still works
+   * under a stale ini instead of silently degrading to a single candidate.
+   */
+  internal static void EnsureDerivedPaths(LauncherConfig cfg)
+  {
+    string dir = string.IsNullOrEmpty(cfg.Batch) ? null : System.IO.Path.GetDirectoryName(cfg.Batch);
+    if (dir == null) return;
+    if (string.IsNullOrEmpty(cfg.Candidates)) cfg.Candidates = System.IO.Path.Combine(dir, "candidates.json");
+    if (string.IsNullOrEmpty(cfg.State)) cfg.State = System.IO.Path.Combine(dir, "launcher-state.json");
+    if (string.IsNullOrEmpty(cfg.Refresh)) cfg.Refresh = System.IO.Path.Combine(dir, "dsh-dock-refresh.mjs");
+  }
+
   /** Degraded single-candidate set (old ini / missing list / wait-mode card). */
   public static CandidateSet Single(LauncherConfig cfg)
   {
@@ -486,6 +503,7 @@ sealed class CandidateSet
   public static CandidateSet Load(LauncherConfig cfg, bool refreshOk)
   {
     var s = new CandidateSet();
+    EnsureDerivedPaths(cfg);
     if (string.IsNullOrEmpty(cfg.Candidates) || !File.Exists(cfg.Candidates))
       return Single(cfg);
     try
@@ -540,6 +558,7 @@ sealed class CandidateSet
   /** Version of the last successful run (state file), or null. */
   public static string ReadLastVersion(LauncherConfig cfg)
   {
+    EnsureDerivedPaths(cfg);
     if (string.IsNullOrEmpty(cfg.State) || !File.Exists(cfg.State)) return null;
     try
     {
@@ -555,7 +574,9 @@ sealed class CandidateSet
   /** Persist the last successful (version, path) — called on a real open. */
   public static void RecordRun(LauncherConfig cfg, CandidateRow row)
   {
-    if (row == null || string.IsNullOrEmpty(cfg.State)) return;
+    if (row == null) return;
+    EnsureDerivedPaths(cfg);
+    if (string.IsNullOrEmpty(cfg.State)) return;
     try
     {
       string json = "{\"lastVersion\":" + DshDockProgram.JsonStr(row.Version)
