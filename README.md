@@ -210,6 +210,7 @@ dsh-dock/
 - **预编译 + 运行时配置**:exe 随仓库提交(`assets/dsh-dock-launcher.exe`),安装免 csc;所有机器相关路径(日志/批处理/Edge 配置/标记/鲸鱼图)烤进 `launcher.ini`(base64 值,中文用户名安全)
 - **HTTP 200 健康闸(含 cookie 语义)**:DSH 对有效 token URL 回 **303 + Set-Cookie → /**,浏览器跟随落 200;闸带 CookieContainer 复刻这一链路,旧 token(裸 401)绝不误开窗
 - **退出/启动竞态吸收**:`.stopping` 新鲜时先等端口死透再冷启动;`.starting.lock` 单实例锁防双启,60s 崩溃接管
+- **动画零阻塞**:TCP 探针(死端口最长阻塞 700ms)、日志抓取、健康闸 HTTP 全部在后台线程轮询,UI 线程只负责绘制——冷启动全程呼吸灯流畅,卡顿与机器性能无关
 - **明确失败而非干等**:端口被占但页面始终不 200 时,~24s 内报出"上一次会话可能未完全退出"+ 日志路径
 - **激活即自动安装**:`apply()` 后 ~2s 落盘全套产物——端口取自**自身 PID 的 LISTENING 套接字**(netstat,~100ms),Node 与启动命令走探测链;已就绪时内容比对直接跳过(仅几次文件读,零 PowerShell、零写入)
 - **诊断钩子**:设置环境变量 `DSH_DOCK_DIAG=1` 后,启动器把决策/崩溃轨迹追加到 `%TEMP%\dsh-dock-diag.log`(平时零开销)

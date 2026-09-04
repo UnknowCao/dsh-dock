@@ -339,8 +339,9 @@ sealed class DshCard : Form
 {
   readonly LauncherConfig cfg;
   readonly bool coldStart;
-  readonly System.Windows.Forms.Timer ui = new System.Windows.Forms.Timer();
   readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
+  Thread poller = null;
+  volatile bool pollerStop = false;
   readonly Label logline = new Label();
   readonly Button closeBtn = new Button();
   readonly Font uiFont = new Font("Segoe UI Light", 11f);
@@ -435,24 +436,17 @@ sealed class DshCard : Form
     };
     anim.Start();
 
-    ui.Interval = 60;
-    ui.Tick += delegate { UiTick(); };
-    ui.Start();
-
     Shown += delegate
     {
       Region = RoundedRegion(Width, Height, 20);
-      if (coldStart)
-      {
-        deadline = DateTime.UtcNow.AddSeconds(180);
-        if (Probe()) SetStatus("正在连接");
-        else SetStatus("正在启动服务器");
-      }
-      else
-      {
-        deadline = DateTime.UtcNow.AddSeconds(180);
-        SetStatus("正在连接");
-      }
+      deadline = DateTime.UtcNow.AddSeconds(180);
+      // Provisional first status; the poller's first probe (within ~60ms)
+      // refines it — probing here would block this (UI) thread.
+      SetStatus(coldStart ? "正在启动" : "正在连接");
+      poller = new Thread(PollerLoop);
+      poller.IsBackground = true;
+      poller.Name = "dsh-dock-poller";
+      poller.Start();
     };
   }
 
@@ -487,7 +481,18 @@ sealed class DshCard : Form
     catch { whaleBmp = null; }
   }
 
-  void SetStatus(string t) { statusText = t; failing = false; Invalidate(); }
+  /** Marshal a UI update onto the message loop (safe once the form is shown). */
+  void Ui(MethodInvoker a)
+  {
+    try { if (!IsDisposed) BeginInvoke(a); }
+    catch (ObjectDisposedException) { }
+    catch (InvalidOperationException) { }
+  }
+
+  void SetStatus(string t)
+  {
+    Ui(delegate { statusText = t; failing = false; Invalidate(); });
+  }
 
   /** Re-read the log, health-gate the token URL, and open on success. */
   bool TryOpenFromLog()
@@ -503,19 +508,43 @@ sealed class DshCard : Form
   {
     DshDockProgram.Diag("card open: " + url);
     opened = true;
-    statusText = "已就绪";
+    pollerStop = true;
     TryClearSpawnLock();
     DshDockProgram.LaunchEdge(url, cfg.Profile);
-    fadeOut = true;
-    fadeTarget = 0f;
+    Ui(delegate
+    {
+      statusText = "已就绪";
+      fadeOut = true;
+      fadeTarget = 0f;
+      Invalidate();
+    });
   }
 
-  void UiTick()
+  /**
+   * All blocking I/O — the TCP probe (a dead port blocks up to 700ms), the
+   * log scrape, and the health-gate HTTP call (up to 1.5s) — runs on this
+   * background thread; the UI thread only paints. These used to run inside
+   * a WinForms timer tick, freezing the message pump and stuttering the
+   * breathing lamp on every poll — machine-independent, because a kernel
+   * connect timeout is not CPU work.
+   */
+  void PollerLoop()
   {
-    if (failing) return;
+    while (!pollerStop)
+    {
+      try { PollOnce(); }
+      catch (Exception ex) { DshDockProgram.Diag("poller tick FAIL: " + ex.Message); }
+      if (pollerStop) break;
+      Thread.Sleep(60);
+    }
+    DshDockProgram.Diag("poller exit");
+  }
+
+  void PollOnce()
+  {
+    if (failing || opened) { pollerStop = true; return; }
     if (coldStart)
     {
-      if (opened) return;
       // Probe at most every ProbeThrottleMs: a dead port blocks the TCP
       // connect up to 700ms, and doing that on every 60ms tick would freeze
       // the breathing animation for the whole server boot.
@@ -595,13 +624,23 @@ sealed class DshCard : Form
   void Fail(string msg)
   {
     failing = true;
-    statusText = "启动失败:" + msg;
-    Size = new Size(W, HFail);
-    Region = RoundedRegion(Width, Height, 20);
-    logline.Text = "日志:" + cfg.Log;
-    logline.Visible = true;
-    closeBtn.Visible = true;
-    Invalidate();
+    pollerStop = true;
+    Ui(delegate
+    {
+      statusText = "启动失败:" + msg;
+      Size = new Size(W, HFail);
+      Region = RoundedRegion(Width, Height, 20);
+      logline.Text = "日志:" + cfg.Log;
+      logline.Visible = true;
+      closeBtn.Visible = true;
+      Invalidate();
+    });
+  }
+
+  protected override void OnFormClosed(FormClosedEventArgs e)
+  {
+    pollerStop = true;
+    base.OnFormClosed(e);
   }
 
   protected override void OnPaint(PaintEventArgs e)
