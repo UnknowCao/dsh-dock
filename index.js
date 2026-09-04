@@ -18,7 +18,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -44,6 +44,13 @@ const LOCK_FILE = join(LAUNCHER_DIR, '.starting.lock')
  * The launcher uses its freshness to absorb the exit/start race.
  */
 const STOPPING_MARKER = join(LAUNCHER_DIR, '.stopping')
+/**
+ * Append-only stop-lifecycle log. Deliberately separate from the server
+ * stdout log (dsh-server.log): the cold-start batch truncates that file on
+ * every boot, which would erase the very exit-branch evidence this file
+ * exists to record. Best-effort writes; never read by the launcher exe.
+ */
+const STOP_LOG = join(LAUNCHER_DIR, 'stop.log')
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url))
 const DOCK_ICO_ASSET = join(PACKAGE_DIR, 'assets', 'dsh-dock.ico')
@@ -568,6 +575,17 @@ function writeJson(res, status, body) {
   res.end(text)
 }
 
+/** Record one stop-lifecycle event to the append-only stop.log (best-effort)
+ *  and mirror it to stdout for the live boot. */
+function logStop(event, detail) {
+  const line = `${new Date().toISOString()}  ${event}${detail === undefined ? '' : '  ' + detail}`
+  console.info('[dsh-dock] ' + line)
+  try {
+    mkdirSync(LAUNCHER_DIR, { recursive: true })
+    appendFileSync(STOP_LOG, line + '\n', 'utf8')
+  } catch { /* best-effort */ }
+}
+
 /**
  * Terminate the process listening on the DSH port (the server itself) via a
  * short-lived PowerShell, scheduled a moment later so the HTTP response can
@@ -759,24 +777,24 @@ export function apply(ctx) {
           // the whole Cordis tree, then let the process exit naturally.
           // Deferred a beat so the HTTP response can flush and the client's
           // close-grace window can start first.
-          console.info('[dsh-dock] stop: graceful path via ctx.appExit')
+          logStop('stop', 'graceful path via ctx.appExit')
           setTimeout(() => {
-            console.info('[dsh-dock] stop: requesting appExit(0)')
-            try { exit(0) } catch (e) { console.warn('[dsh-dock] stop: appExit failed:', e && e.message) }
+            logStop('stop', 'requesting appExit(0)')
+            try { exit(0) } catch (e) { logStop('stop', 'appExit failed: ' + (e && e.message)) }
           }, 600)
           // Watchdog: if the tree disposes but the event loop never drains,
           // the natural exit never fires — force it after 7s (later than the
           // controller's own 5s dispose cap). unref: never keeps the loop
           // alive by itself, so a healthy natural exit wins the race.
           const watchdog = setTimeout(() => {
-            console.info('[dsh-dock] stop: watchdog forcing process.exit(0)')
+            logStop('stop', 'watchdog forcing process.exit(0)')
             process.exit(0)
           }, 7000)
           if (typeof watchdog.unref === 'function') watchdog.unref()
         } else {
           // Legacy fallback (host without ctx.appExit): hard-kill via a
           // short-lived PowerShell, exactly as pre-v0.3.4.
-          console.info('[dsh-dock] stop: fallback hard-kill (no ctx.appExit on this host)')
+          logStop('stop', 'fallback hard-kill (no ctx.appExit on this host)')
           const port = readInstalledPort()
           const hostAuth = parseAuthority(req.headers.host)
           const selfPid = hostAuth !== undefined && Number(hostAuth.port) === port
