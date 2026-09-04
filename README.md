@@ -91,7 +91,7 @@ DSH Dock 把整件事收进两个入口:
 前置条件:Windows 10/11 + DSH `web` profile + Edge(缺失时回落默认浏览器)。无需 Node 配置——安装时自动探测可用 Node(≥ 22.19)。
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/dsh-dock
+dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.3.0
 ```
 
 重启服务器后**无需任何操作**:插件激活时自动从环境提取参数(自身监听端口、Node 路径、启动命令),~2 秒内桌面出现「DSH Harness.exe」(黑鲸鱼图标)+ 侧栏「更多」菜单。日常两步:**双击鲸鱼开,菜单里退**。
