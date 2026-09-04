@@ -18,6 +18,22 @@ pwsh -NoProfile -File scripts/capture-demo-card.ps1
 
 前置:先 `scripts/build-launcher.ps1` 编译最新 `assets/dsh-dock-launcher.exe`。
 
+## 1b. 多候选冷启动卡片(cold-card-multidsh.png)— 脚本一键重录
+
+```powershell
+pwsh -NoProfile -File scripts/capture-multidsh.ps1
+# 自定义输出:
+# pwsh -NoProfile -File scripts/capture-multidsh.ps1 -OutPath C:\tmp\multidsh.png
+```
+
+脚本做的(全部真实、零副作用,与 capture-demo-card.ps1 同一套隔离手法):
+
+- 临时替换 `launcher.ini`(完事自动恢复)为演示配置:URL 指向**无人监听的端口**(如 3098 → 冷路径),LOG/LOCK/STOPPING/STATE/CANDIDATES 全部走 demo 专用文件,`REFRESH=''` 跳过 T2 复核(旧清单+「可能已过期」态);
+- 写一个含 **6 行候选**的 demo `candidates.json`(含重复版本+来源、源码检出路径),复现「可滚动 + 路径尾 + 溢出脚注」;
+- 最小化窗口 → 起预编译启动器 → 等 ~4s(选择态、倒计时进行中)→ 用 `EnumWindows`+`GetWindowRect` 取**真实窗口矩形**按任意 DPI 取景 → 截 PNG,完事恢复。
+
+> ⚠️ 卡片是半透明分层窗口,`CopyFromScreen` 在个别 DPI/合成器下可能抓到下层桌面。若产物非卡片本身(如壁纸),重跑一次即可;实机显示不受影响。
+
 ## 2. 桌面程序图标(desktop-shortcut.png)— 从 ico 提取
 
 `assets/dsh-dock.ico` 内嵌了一张 512×512 PNG 帧。提取:
