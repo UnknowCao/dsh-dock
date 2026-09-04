@@ -13,7 +13,7 @@
 
 **把「开终端 → 敲命令 → 粘 token → 手动全屏 → 翻进程列表杀进程」收成桌面一个鲸鱼图标 + 侧栏一个「更多」菜单。单文件原生 exe、免编译安装、零依赖、只与本机通信。**
 
-[效果与实测](#效果与实测) · [快速开始](#快速开始) · [触发方式](#触发方式) · [能做什么](#能做什么) · [它和同类有什么不同](#它和同类有什么不同) · [安全边界](#安全边界) · [验证与测试](#验证与测试)
+[效果与实测](#效果与实测) · [快速开始](#快速开始) · [能做什么](#能做什么) · [安全边界](#安全边界) · [验证与测试](#验证与测试)
 
 </div>
 
@@ -104,20 +104,6 @@ dsh plugin --profile web add github:UnknowCao/unknowCao-dsh-plugin
 
 卸载:删桌面 `DSH Harness.exe` 与 `~\.dsh\launcher\`;profile 里移除依赖与 bundle 条目。卸载不会自动删除任何文件。
 
----
-
-## 触发方式
-
-安装全自动(激活即落盘)。装完后,Agent 还能听懂这些话(**用于自定义重装**):
-
-- 「装桌面图标 / 一键启动 / 桌面快捷方式」
-- 「双击图标打开怎么这么慢 / 给我加个启动画面」
-- 「侧栏底部的更多菜单在哪 / 设置和退出的入口」
-- 「重启一下界面 / 相当于按 Ctrl+Shift+R」
-- 「完全退出服务器,会话要保留」
-- 「把打开的窗口改成全屏」
-
----
 
 ## 能做什么
 
@@ -145,15 +131,7 @@ dsh plugin --profile web add github:UnknowCao/unknowCao-dsh-plugin
 
 ---
 
-## 它和同类有什么不同
 
-「给 DSH 一个桌面入口」这个方向上已有几个同行,各有取舍,按需选择:
-
-| 同类 | 它的路线 | 与 dsh-dock 的差异 |
-|---|---|---|
-| [dsh-whale-desktop-launcher](https://github.com/HUITianYi/dsh-whale-desktop-launcher) | 桌面鲸娘图标 + Edge/Chrome app 窗口,预编译 exe 入库 | 思路同源(桌面图标 + 免编译安装)。dsh-dock 额外把**退出**收进侧栏菜单并自动关窗停服,且带 token 健康闸——失效 token 绝不误开窗 |
-| [@debb74/dsh-desktop](https://www.npmjs.com/package/@debb74/dsh-desktop) | `.lnk` 快捷方式管理 + 图标选择器,配 Tauri 外壳出独立窗口 | 走「快捷方式 + 外壳」路线,npm 安装需 sharp 构建审批。dsh-dock 桌面放的是 **exe 本体**(双击即全链路),安装零构建、零审批 |
-| [dsh-melody-launcher](https://www.npmjs.com/package/dsh-melody-launcher) | 独立启动器 + 插件/API Key 管理,免预装 Node | 面向「完全不想碰命令行」的重度管理场景。dsh-dock 更轻:作为 DSH 内插件,专注**打开/退出**两个高频动作 |
 
 更多插件见生态索引:[dsh-plugin 话题](https://github.com/topics/dsh-plugin) · [Oh-My-DSH](https://github.com/NoWint/Oh-My-DSH) · [awesome-deepseek-harness](https://github.com/0xsline/awesome-deepseek-harness)。
 
@@ -224,8 +202,6 @@ unknowCao-dsh-plugin/        # 仓库根(插件包名 dsh-dock)
 3. **冷启动**:菜单「完全退出」×2 → 等 `Get-NetTCPConnection -LocalPort 3080 -State Listen` 无输出 → 双击桌面程序 → 鲸鱼呼吸灯卡片 → 服务器就绪 → 全屏窗口 → 卡片淡出。
 4. **抗竞态**:第 3 步服务器启动途中(约 10s 内)再双击一次 → 应只有一个服务器、最终窗口可用。
 
-> 实测口径:v1 数字为 Windows 11 + 360 环境本机计时;**v2(单 exe)已于同机复测通过**——快路径 exe 内部决策 ~50–500ms(首次含 JIT 预热)+ Edge 进程创建,冷启动与退出竞态真机全过。脚本侧回归:`pwsh -File scripts/verify-health-gate.ps1`(失效 token 绝不误开窗);现场排查设 `DSH_DOCK_DIAG=1` 看 `%TEMP%\dsh-dock-diag.log`。
-
 ---
 
 ## 实现要点(给想了解深度的读者)
@@ -244,10 +220,6 @@ unknowCao-dsh-plugin/        # 仓库根(插件包名 dsh-dock)
 ## 致谢与声明
 
 - 本插件依赖 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 本体,鲸鱼品牌素材归其所有。
-- 「桌面入口」方向上的同行 [dsh-whale-desktop-launcher](https://github.com/HUITianYi/dsh-whale-desktop-launcher) 与 [@debb74/dsh-desktop](https://www.npmjs.com/package/@debb74/dsh-desktop) 各自探路:预编译 exe 入库、零生命周期脚本安装等做法与本插件互相印证。
-- 生态索引 [Oh-My-DSH](https://github.com/NoWint/Oh-My-DSH) 与 [awesome-deepseek-harness](https://github.com/0xsline/awesome-deepseek-harness) 收录了大量 DSH 插件,欢迎顺路逛逛。
-
-社区项目,非 DeepSeek AI 官方产品。属于 DeepSeek Harness 插件生态,在 GitHub 上可通过 [`dsh-plugin` 话题](https://github.com/topics/dsh-plugin)发现;仓库发布时请给本仓库打上 `dsh-plugin` 话题标签。
 
 ## License
 

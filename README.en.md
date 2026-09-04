@@ -13,7 +13,7 @@
 
 **Collapses "open a terminal → type the command → paste the token → press F11 → hunt the process list to kill the server" into one whale icon on your desktop plus one More menu in the sidebar. Single-file native exe, no build step on install, zero dependencies, loopback-only traffic.**
 
-[Results and live tests](#results-and-live-tests) · [Quick start](#quick-start) · [Trigger phrases](#trigger-phrases) · [What it can do](#what-it-can-do) · [How it differs from similar plugins](#how-it-differs-from-similar-plugins) · [Security boundaries](#security-boundaries) · [Verification and testing](#verification-and-testing)
+[Results and live tests](#results-and-live-tests) · [Quick start](#quick-start) · [What it can do](#what-it-can-do) · [Security boundaries](#security-boundaries) · [Verification and testing](#verification-and-testing)
 
 </div>
 
@@ -108,19 +108,6 @@ Uninstall: delete the desktop `DSH Harness.exe` and `~\.dsh\launcher\`; remove t
 
 ---
 
-## Trigger phrases
-
-Installation is fully automatic (activate → write to disk). After that, the agent also understands (for customized reinstalls):
-
-- "Install the desktop icon / one-click launch / desktop shortcut"
-- "Double-click opens so slowly — add a splash screen"
-- "Where's the More menu at the bottom of the sidebar / the settings and exit entries"
-- "Reload the interface / same as pressing Ctrl+Shift+R"
-- "Fully exit the server, keep my sessions"
-- "Make the opened window fullscreen"
-
----
-
 ## What it can do
 
 | Capability | Delivers | Trigger |
@@ -146,16 +133,6 @@ Installation is fully automatic (activate → write to disk). After that, the ag
 | Double-click again | May spawn a second server | Idempotent: already running → just open the window |
 
 ---
-
-## How it differs from similar plugins
-
-Several plugins already give DSH a desktop entry; each takes a different trade-off — pick what fits:
-
-| Plugin | Its approach | Difference vs dsh-dock |
-|---|---|---|
-| [dsh-whale-desktop-launcher](https://github.com/HUITianYi/dsh-whale-desktop-launcher) | Desktop whale-girl icon + Edge/Chrome app window, prebuilt exe committed | Same core idea (desktop icon + build-free install). dsh-dock additionally moves **exit** into a sidebar menu with automatic window-close and server stop, and adds a token health gate — a stale token never opens a window |
-| [@debb74/dsh-desktop](https://www.npmjs.com/package/@debb74/dsh-desktop) | `.lnk` shortcut manager + icon picker, Tauri shell for the standalone window | "Shortcut + shell" route; the npm install needs a sharp build approval. dsh-dock puts the **exe itself** on the desktop (double-click runs the whole chain) — zero builds, zero approvals |
-| [dsh-melody-launcher](https://www.npmjs.com/package/dsh-melody-launcher) | Standalone launcher + plugin/API-key management, no Node preinstall | Aimed at heavy management without touching a terminal. dsh-dock is lighter: a DSH-internal plugin focused on the two high-frequency actions — **open / exit** |
 
 More plugins in the ecosystem indexes: [dsh-plugin topic](https://github.com/topics/dsh-plugin) · [Oh-My-DSH](https://github.com/NoWint/Oh-My-DSH) · [awesome-deepseek-harness](https://github.com/0xsline/awesome-deepseek-harness).
 
@@ -227,8 +204,6 @@ Spend 3 minutes self-verifying after install (every step lists its expected outc
 3. **Cold start**: menu "Full Exit" ×2 → wait until `Get-NetTCPConnection -LocalPort 3080 -State Listen` prints nothing → double-click the desktop app → breathing-whale card → server ready → full-screen window → card fades out.
 4. **Race check**: during step 3's server startup (within ~10s), double-click once more → there should be exactly one server and a usable window at the end.
 
-> Measurement context: the v1 numbers are local timings on Windows 11 + 360 AV; **v2 (single exe) was re-verified on the same machine** — fast-path in-exe decision ~50–500ms (first run includes JIT warmup) + Edge process creation; cold start and the exit race passed on a real machine. Scripted regression: `pwsh -File scripts/verify-health-gate.ps1` (a dead token must never open a window); for live troubleshooting set `DSH_DOCK_DIAG=1` and read `%TEMP%\dsh-dock-diag.log`.
-
 ---
 
 ## Implementation notes (for readers who want depth)
@@ -247,10 +222,6 @@ Spend 3 minutes self-verifying after install (every step lists its expected outc
 ## Acknowledgements and disclaimer
 
 - This plugin depends on [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) itself; the whale brand assets belong to it.
-- Fellow travelers on the "desktop entry" route — [dsh-whale-desktop-launcher](https://github.com/HUITianYi/dsh-whale-desktop-launcher) and [@debb74/dsh-desktop](https://www.npmjs.com/package/@debb74/dsh-desktop) — each explored the space; committing a prebuilt exe and shipping zero lifecycle scripts are practices we mutually validate.
-- The ecosystem indexes [Oh-My-DSH](https://github.com/NoWint/Oh-My-DSH) and [awesome-deepseek-harness](https://github.com/0xsline/awesome-deepseek-harness) catalog many more DSH plugins — take a stroll.
-
-Community project, not an official DeepSeek AI product. Part of the DeepSeek Harness plugin ecosystem, discoverable via the [`dsh-plugin` topic](https://github.com/topics/dsh-plugin); when publishing this repo, tag it with the `dsh-plugin` topic.
 
 ## License
 
