@@ -304,7 +304,7 @@ window.__ModuleLoader__.load({
       )
       const restartItem = mkItem(
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
-        '重启',
+        '重启/刷新',
         onRestartClick,
       )
       const exitItem = mkItem(
@@ -488,7 +488,7 @@ window.__ModuleLoader__.load({
       }
 
       const active = menuOpen || phase === 'exiting'
-      const title = '更多（设置 / 重启 / 完全退出）'
+      const title = '更多（设置 / 重启/刷新 / 完全退出）'
       const style = {
         ...STYLE_BUTTON,
         ...(wide ? GEOM_WIDE : GEOM_RAIL),

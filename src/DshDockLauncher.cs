@@ -455,6 +455,13 @@ sealed class CandidateRow
     // live next to it under their own names.
     string dir = System.IO.Path.GetDirectoryName(cfg.Batch);
     if (string.IsNullOrEmpty(Batch)) return cfg.Batch;
+    // Defense in depth: only a bare filename may combine into the launcher
+    // dir. A tampered candidates.json could name an absolute path or a path
+    // with separators here (Path.Combine would run it verbatim); refuse and
+    // fall back to the canonical default batch instead.
+    if (System.IO.Path.IsPathRooted(Batch)
+      || Batch.IndexOfAny(new char[] { '\\', '/' }) >= 0)
+      return cfg.Batch;
     if (dir == null) return Batch;
     return System.IO.Path.Combine(dir, Batch);
   }
@@ -602,6 +609,8 @@ sealed class DshCard : Form
   readonly Button closeBtn = new Button();
   readonly Font uiFont = new Font("Segoe UI Light", 11f);
   readonly Font monoFont = new Font("Consolas", 8.5f);
+  readonly Font titleFont = new Font("Segoe UI", 12f, FontStyle.Bold);
+  readonly Font tagFont = new Font("Segoe UI", 8.5f);
   readonly Color bgTop = Color.FromArgb(28, 33, 42);
   readonly Color bgBot = Color.FromArgb(20, 24, 31);
   readonly Color ink = Color.FromArgb(200, 206, 216);
@@ -633,20 +642,27 @@ sealed class DshCard : Form
   const int HFail = 284;
   const int HZero = 204;
   const int WhaleW = 84;
-  // v0.3.3 multi-DSH selection on the cold-start card.
+  // v0.3.5 multi-DSH selection: a painted candidate list (no native ComboBox).
+  const int WMulti = 400;
+  const int HMulti = 288;
+  const int ListX = 24;
+  const int ListRowH = 46;
+  const int ListGap = 7;
+  const int ListTop = 88;
+  const int ListViewBottom = 244;   // bottom of the scrollable list viewport
   readonly CandidateSet cands;
   readonly bool stale;
   readonly List<CandidateRow> rows = new List<CandidateRow>();
-  readonly ComboBox combo = new ComboBox();
   readonly Button npxBtn = new Button();
   readonly Button cancelBtn = new Button();
-  readonly Label staleLbl = new Label();
-  readonly Label autoLbl = new Label();
   int choiceMode = 0;        // 0 = none/single, 1 = picker, 2 = zero-candidate prompt
   int chosenIndex = -1;
+  int keyIndex = 0;          // highlighted candidate; Enter/auto-start target
+  int hoverIndex = -1;
+  int scrollY = 0;           // scroll offset in px when the list overflows
   string serverBatch = null;
   bool chooseDone = false;
-  bool comboOpen = false;
+  bool listVisible = false;
   DateTime chooseDeadline = DateTime.MaxValue;
   int lastHintSec = -1;
   const int ChooseSeconds = 5;
@@ -663,17 +679,12 @@ sealed class DshCard : Form
 
     // Resolve the start target up front. The picker (mode 1) pauses spawn
     // until the user picks or the countdown fires; the zero-prompt (mode 2)
-    // waits for an explicit npx/cancel click.
+    // waits for an explicit npx/cancel click. Mode 0 (single candidate) is
+    // resolved in SetupChoiceControls.
     if (coldStart)
     {
       if (rows.Count > 1) choiceMode = 1;
       else if (rows.Count == 0) choiceMode = 2;
-    }
-    if (choiceMode == 0 && rows.Count > 0)
-    {
-      chosenIndex = 0;
-      serverBatch = rows[0].BatchPath(config);
-      chooseDone = true;
     }
 
     FormBorderStyle = FormBorderStyle.None;
@@ -739,7 +750,16 @@ sealed class DshCard : Form
       deadline = DateTime.UtcNow.AddSeconds(180);
       // Provisional first status; the poller's first probe (within ~60ms)
       // refines it — probing here would block this (UI) thread.
-      if (choiceMode == 2)
+      if (choiceMode == 1)
+      {
+        Size = new Size(WMulti, HMulti);
+        Region = RoundedRegion(WMulti, HMulti, 20);
+        SetStatus("正在选择要启动的 DSH");
+        listVisible = true;
+        chooseDeadline = DateTime.UtcNow.AddSeconds(ChooseSeconds);
+        lastHintSec = -1;
+      }
+      else if (choiceMode == 2)
       {
         Size = new Size(W, HZero);
         Region = RoundedRegion(W, HZero, 20);
@@ -751,13 +771,6 @@ sealed class DshCard : Form
       else
       {
         SetStatus(coldStart ? "正在启动" : "正在连接");
-        if (choiceMode == 1)
-        {
-          combo.Visible = true;
-          autoLbl.Visible = true;
-          chooseDeadline = DateTime.UtcNow.AddSeconds(ChooseSeconds);
-          lastHintSec = -1;
-        }
       }
       poller = new Thread(PollerLoop);
       poller.IsBackground = true;
@@ -797,57 +810,30 @@ sealed class DshCard : Form
     catch { whaleBmp = null; }
   }
 
-  /** Build the choice-phase controls (picker combo / npx prompt / stale hint). */
+  /** Build the choice-phase controls: npx prompt (mode 2) and the painted
+   *  candidate-list geometry (mode 1); the list itself is drawn in OnPaint. */
   void SetupChoiceControls()
   {
-    combo.DropDownStyle = ComboBoxStyle.DropDownList;
-    combo.FlatStyle = FlatStyle.Flat;
-    combo.BackColor = Color.FromArgb(32, 37, 48);
-    combo.ForeColor = ink;
-    combo.Font = new Font("Segoe UI", 9f);
-    combo.Location = new Point(26, 98);
-    combo.Size = new Size(214, 24);
-    combo.Visible = false;
-    foreach (CandidateRow r in rows) combo.Items.Add(r.Label);
-    if (rows.Count > 0)
+    keyIndex = 0;
+    scrollY = 0;
+    if (choiceMode == 1 && rows.Count > 0)
     {
+      // Preselect the last successfully-run version when the list is real.
       string lastV = cands.HasRealList ? CandidateSet.ReadLastVersion(cfg) : null;
-      int preselect = 0;
       if (lastV != null)
       {
         for (int i = 0; i < rows.Count; i++)
         {
-          if (rows[i].Version == lastV) { preselect = i; break; }
+          if (rows[i].Version == lastV) { keyIndex = i; break; }
         }
       }
-      combo.SelectedIndex = preselect;
     }
-    combo.DropDown += delegate
+    else if (rows.Count > 0)
     {
-      comboOpen = true;
-      autoLbl.Text = "";
-    };
-    combo.DropDownClosed += delegate
-    {
-      comboOpen = false;
-      // Opened but not picked: give the countdown a fresh window.
-      if (choiceMode == 1 && !chooseDone)
-      {
-        chooseDeadline = DateTime.UtcNow.AddSeconds(ChooseSeconds);
-        lastHintSec = -1;
-        autoLbl.Text = "";
-      }
-    };
-    combo.SelectionChangeCommitted += delegate { DoChoose(combo.SelectedIndex); };
-    Controls.Add(combo);
-
-    autoLbl.Location = new Point(246, 100);
-    autoLbl.Size = new Size(68, 20);
-    autoLbl.Font = monoFont;
-    autoLbl.ForeColor = dim;
-    autoLbl.TextAlign = ContentAlignment.MiddleRight;
-    autoLbl.Visible = false;
-    Controls.Add(autoLbl);
+      chosenIndex = 0;
+      serverBatch = rows[0].BatchPath(cfg);
+      chooseDone = true;
+    }
 
     npxBtn.Location = new Point(26, 158);
     npxBtn.Size = new Size(192, 30);
@@ -866,7 +852,6 @@ sealed class DshCard : Form
       chooseDone = true;
       npxBtn.Visible = false;
       cancelBtn.Visible = false;
-      autoLbl.Text = "";
       SetStatus("正在通过 npx 获取最新版…");
     };
     Controls.Add(npxBtn);
@@ -884,30 +869,24 @@ sealed class DshCard : Form
     cancelBtn.Click += delegate { fadeOut = true; fadeTarget = 0f; };
     Controls.Add(cancelBtn);
 
-    staleLbl.Location = new Point(10, 6);
-    staleLbl.Size = new Size(320, 14);
-    staleLbl.Font = monoFont;
-    staleLbl.ForeColor = dim;
-    staleLbl.Text = "版本列表可能已过期,可能未包含最新安装的 DSH";
-    staleLbl.Visible = stale && cands.HasRealList && choiceMode != 2;
-    Controls.Add(staleLbl);
+    KeyPreview = true;   // let the card see Up/Down/Enter before the buttons
   }
 
   /** 5s auto-start countdown for the picker (mode 1); no-op otherwise. */
   void TickChoice()
   {
-    if (choiceMode != 1 || chooseDone || comboOpen) return;
+    if (choiceMode != 1 || chooseDone) return;
     double left = (chooseDeadline - DateTime.UtcNow).TotalSeconds;
     if (left <= 0)
     {
-      DoChoose(combo.SelectedIndex >= 0 ? combo.SelectedIndex : 0);
+      DoChoose(keyIndex >= 0 && keyIndex < rows.Count ? keyIndex : 0);
       return;
     }
     int secs = (int)Math.Ceiling(left);
     if (secs != lastHintSec)
     {
       lastHintSec = secs;
-      autoLbl.Text = secs + " 秒后自动启动";
+      Invalidate();   // the countdown is painted in OnPaint
     }
   }
 
@@ -919,10 +898,14 @@ sealed class DshCard : Form
     chosenIndex = index;
     serverBatch = rows[index].BatchPath(cfg);
     chooseDone = true;
-    combo.Visible = false;
-    autoLbl.Visible = false;
+    listVisible = false;
+    hoverIndex = -1;
     DshDockProgram.Diag("chosen: " + rows[index].Label + " batch=" + serverBatch);
     SetStatus("正在启动 " + rows[index].Label);
+    // Settle the card back to the single-candidate startup size.
+    Size = new Size(W, HNormal);
+    Region = RoundedRegion(W, HNormal, 20);
+    Invalidate();
   }
 
   /** Marshal a UI update onto the message loop (safe once the form is shown). */
@@ -1116,6 +1099,26 @@ sealed class DshCard : Form
     base.OnFormClosed(e);
   }
 
+  /** Release the GDI+ resources this card owns. */
+  protected override void Dispose(bool disposing)
+  {
+    if (disposing)
+    {
+      if (whaleBmp != null) whaleBmp.Dispose();
+      if (textInk != null) textInk.Dispose();
+      if (textDanger != null) textDanger.Dispose();
+      if (borderPen != null) borderPen.Dispose();
+      if (whaleAttrs != null) whaleAttrs.Dispose();
+      if (uiFont != null) uiFont.Dispose();
+      if (monoFont != null) monoFont.Dispose();
+      if (titleFont != null) titleFont.Dispose();
+      if (tagFont != null) tagFont.Dispose();
+      anim.Stop();
+      anim.Dispose();
+    }
+    base.Dispose(disposing);
+  }
+
   protected override void OnPaint(PaintEventArgs e)
   {
     var g = e.Graphics;
@@ -1133,6 +1136,13 @@ sealed class DshCard : Form
 
     g.DrawPath(borderPen, RoundedPath(0.5f, 0.5f, Width - 1f, Height - 1f, 19f));
 
+    if (choiceMode == 1 && listVisible && !chooseDone) PaintCandidateList(g);
+    else PaintWhaleAndStatus(g);
+  }
+
+  /** The single-candidate / zero / fail / post-choice face. */
+  void PaintWhaleAndStatus(Graphics g)
+  {
     if (whaleBmp != null)
     {
       int whaleH = whaleBmp.Height;
@@ -1148,16 +1158,209 @@ sealed class DshCard : Form
           0, 0, WhaleW, whaleH, GraphicsUnit.Pixel, whaleAttrs);
       }
     }
-
     var sf = new StringFormat();
     sf.Alignment = StringAlignment.Center;
     sf.LineAlignment = StringAlignment.Center;
     int statusY = (choiceMode == 2) ? 112 : 138;
     using (var brush = new SolidBrush(failing ? danger : dim))
     {
-      g.DrawString(statusText, uiFont, brush,
-        new RectangleF(0, statusY, Width, 30), sf);
+      g.DrawString(statusText, uiFont, brush, new RectangleF(0, statusY, Width, 30), sf);
     }
+  }
+
+  /** Multi-DSH face: a painted, scrollable candidate list matching the chrome. */
+  void PaintCandidateList(Graphics g)
+  {
+    // Brand whale, centered at the top (a bit bigger than a thumbnail).
+    if (whaleBmp != null)
+    {
+      int smallW = 64, smallH = (int)(smallW * (float)whaleBmp.Height / whaleBmp.Width);
+      int wx = (Width - smallW) / 2, wy = 12;
+      float lamp = (float)(0.35 + 0.65 * (0.5 - 0.5 * Math.Cos(breatheT * 2 * Math.PI)));
+      whaleMatrix.Matrix33 = lamp;
+      whaleAttrs.SetColorMatrix(whaleMatrix);
+      g.DrawImage(whaleBmp, new Rectangle(wx, wy, smallW, smallH),
+        0, 0, whaleBmp.Width, whaleBmp.Height, GraphicsUnit.Pixel, whaleAttrs);
+    }
+
+    using (var titleBrush = new SolidBrush(Color.FromArgb(220, 226, 234)))
+    {
+      var sf = new StringFormat();
+      sf.Alignment = StringAlignment.Center;
+      g.DrawString("选择要启动的 DSH", titleFont, titleBrush, new RectangleF(0, 60, Width, 24), sf);
+    }
+
+    int viewH = ListViewBottom - ListTop;
+    int maxScroll = ComputeMaxScroll();
+    int rowW = WMulti - 2 * ListX;
+    using (var rowFill = new SolidBrush(Color.FromArgb(30, 36, 46)))
+    using (var hoverFill = new SolidBrush(Color.FromArgb(44, 52, 66)))
+    using (var selBorder = new Pen(Color.FromArgb(160, 195, 235), 1.6f))
+    using (var mainBrush = new SolidBrush(ink))
+    using (var dimBrush = new SolidBrush(dim))
+    using (var checkPen = new Pen(Color.FromArgb(130, 210, 160), 2f))
+    {
+      for (int i = 0; i < rows.Count; i++)
+      {
+        int y = ListTop + i * (ListRowH + ListGap) - scrollY;
+        if (y + ListRowH < ListTop || y > ListTop + viewH) continue;  // off-viewport
+        var r = new Rectangle(ListX, y, rowW, ListRowH);
+        bool sel = i == keyIndex;
+        bool hov = i == hoverIndex;
+        using (var path = RoundedPath(r.X, r.Y, r.Width, r.Height, 9))
+        {
+          g.FillPath(hov ? hoverFill : rowFill, path);
+          if (sel) g.DrawPath(selBorder, path);
+        }
+        var mr = new Rectangle(r.X + 14, r.Y + 8, r.Width - 14 - 32, 20);
+        DrawEllipsis(g, rows[i].Label, uiFont, mainBrush, mr);
+        var pr = new Rectangle(r.X + 14, r.Y + 26, r.Width - 14 - 32, 16);
+        DrawEllipsis(g, PathTail(rows[i].Path), monoFont, dimBrush, pr);
+        if (sel)
+        {
+          float cx = r.Right - 20, cy = r.Top + r.Height / 2f;
+          g.DrawLines(checkPen, new PointF[] {
+            new PointF(cx - 5, cy), new PointF(cx - 1, cy + 4), new PointF(cx + 6, cy - 4) });
+        }
+      }
+      // thin scrollbar thumb when the list overflows
+      if (maxScroll > 0)
+      {
+        int trackW = 4, tx = WMulti - 14;
+        float thumbH = Math.Max(24f, viewH * (float)viewH / (viewH + maxScroll));
+        float ty = ListTop + (float)scrollY / maxScroll * Math.Max(0, viewH - thumbH);
+        using (var thumb = new SolidBrush(Color.FromArgb(110, 120, 134)))
+        using (var tp = RoundedPath(tx, (int)ty, trackW, (int)thumbH, 2))
+          g.FillPath(thumb, tp);
+      }
+    }
+
+    // footer: countdown (right) + overflow/stale note (center)
+    var sfC = new StringFormat();
+    sfC.Alignment = StringAlignment.Far;
+    if (!chooseDone)
+    {
+      double left = Math.Max(0, (chooseDeadline - DateTime.UtcNow).TotalSeconds);
+      int secs = (int)Math.Ceiling(left);
+      using (var hint = new SolidBrush(dim))
+        g.DrawString(secs + " 秒后自动启动", monoFont, hint,
+          new RectangleF(12, HMulti - 34, Width - 24, 18), sfC);
+    }
+    string note = null;
+    if (maxScroll > 0) note = "共 " + rows.Count + " 个候选 · 滚轮 / ↑↓ 选择";
+    else if (stale && cands.HasRealList) note = "候选列表可能已过期";
+    if (note != null)
+    {
+      using (var nb = new SolidBrush(Color.FromArgb(150, 158, 170)))
+      {
+        var sn = new StringFormat();
+        sn.Alignment = StringAlignment.Center;
+        g.DrawString(note, tagFont, nb, new RectangleF(0, HMulti - 20, Width, 16), sn);
+      }
+    }
+  }
+
+  /** Right-anchored path tail so the install dir is recognizable in a row. */
+  string PathTail(string p)
+  {
+    if (string.IsNullOrEmpty(p)) return p;
+    var segs = p.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+    if (segs.Length <= 3) return p;
+    return "…\\" + segs[segs.Length - 2] + "\\" + segs[segs.Length - 1];
+  }
+
+  /** How far the list can scroll (0 = fits). */
+  int ComputeMaxScroll()
+  {
+    int viewH = ListViewBottom - ListTop;
+    int contentH = rows.Count * ListRowH + (rows.Count > 0 ? (rows.Count - 1) * ListGap : 0);
+    return Math.Max(0, contentH - viewH);
+  }
+
+  int RowRectAt(Point p)
+  {
+    int rowW = WMulti - 2 * ListX;
+    for (int i = 0; i < rows.Count; i++)
+    {
+      int y = ListTop + i * (ListRowH + ListGap) - scrollY;
+      if (p.X >= ListX && p.X <= ListX + rowW && p.Y >= y && p.Y < y + ListRowH) return i;
+    }
+    return -1;
+  }
+
+  /** Keep the highlighted row inside the scroll viewport. */
+  void EnsureKeyVisible()
+  {
+    int max = ComputeMaxScroll();
+    if (max <= 0) { scrollY = 0; return; }
+    int top = ListTop + keyIndex * (ListRowH + ListGap) - scrollY;
+    int bot = top + ListRowH;
+    int viewH = ListViewBottom - ListTop;
+    if (top < ListTop) scrollY -= (ListTop - top);
+    else if (bot > ListTop + viewH) scrollY += (bot - (ListTop + viewH));
+    if (scrollY < 0) scrollY = 0;
+    if (scrollY > max) scrollY = max;
+  }
+
+  protected override void OnMouseWheel(MouseEventArgs e)
+  {
+    base.OnMouseWheel(e);
+    if (choiceMode != 1 || !listVisible || chooseDone) return;
+    int max = ComputeMaxScroll();
+    if (max <= 0) return;
+    scrollY -= (e.Delta > 0 ? 40 : -40);
+    if (scrollY < 0) scrollY = 0;
+    if (scrollY > max) scrollY = max;
+    var handled = e as HandledMouseEventArgs;
+    if (handled != null) handled.Handled = true;
+    Invalidate();
+  }
+
+  void DrawEllipsis(Graphics g, string text, Font font, Brush brush, Rectangle rect)
+  {
+    if (string.IsNullOrEmpty(text)) return;
+    TextRenderer.DrawText(g, text, font, rect, ((SolidBrush)brush).Color,
+      TextFormatFlags.SingleLine | TextFormatFlags.Left
+      | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis
+      | TextFormatFlags.NoPrefix);
+  }
+
+  protected override void OnMouseMove(MouseEventArgs e)
+  {
+    base.OnMouseMove(e);
+    if (choiceMode != 1 || !listVisible || chooseDone) return;
+    int h = RowRectAt(e.Location);
+    if (h != hoverIndex)
+    {
+      hoverIndex = h;
+      Cursor = h >= 0 ? Cursors.Hand : Cursors.Default;
+      Invalidate();
+    }
+  }
+
+  protected override void OnMouseLeave(EventArgs e)
+  {
+    base.OnMouseLeave(e);
+    if (hoverIndex != -1) { hoverIndex = -1; Cursor = Cursors.Default; Invalidate(); }
+  }
+
+  protected override void OnMouseClick(MouseEventArgs e)
+  {
+    base.OnMouseClick(e);
+    if (choiceMode != 1 || !listVisible || chooseDone) return;
+    if (e.Button != MouseButtons.Left) return;
+    int i = RowRectAt(e.Location);
+    if (i >= 0) DoChoose(i);
+  }
+
+  protected override void OnKeyDown(KeyEventArgs e)
+  {
+    base.OnKeyDown(e);
+    if (choiceMode != 1 || !listVisible || chooseDone) return;
+    if (e.KeyCode == Keys.Up) { keyIndex = Math.Max(0, keyIndex - 1); EnsureKeyVisible(); Invalidate(); e.Handled = true; }
+    else if (e.KeyCode == Keys.Down) { keyIndex = Math.Min(rows.Count - 1, keyIndex + 1); EnsureKeyVisible(); Invalidate(); e.Handled = true; }
+    else if (e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) { DoChoose(keyIndex); e.Handled = true; }
+    else if (e.KeyCode == Keys.Escape) { fadeOut = true; fadeTarget = 0f; e.Handled = true; }
   }
 
   static System.Drawing.Drawing2D.GraphicsPath RoundedPath(float x, float y, float w, float h, float r)
