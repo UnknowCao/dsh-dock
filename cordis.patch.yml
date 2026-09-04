@@ -1,0 +1,7 @@
+# dsh-dock bundle patch.
+# Inserts one host-plane row: the launcher_install tool. The row publishes no
+# service, so no realm is needed; it registers a global tool every agent sees.
+
+- insert:
+    - id: launcher
+      name: 'dsh-dock'
