@@ -665,7 +665,7 @@ sealed class DshCard : Form
   bool listVisible = false;
   DateTime chooseDeadline = DateTime.MaxValue;
   int lastHintSec = -1;
-  const int ChooseSeconds = 5;
+  const int ChooseSeconds = 10;
 
   public DshCard(LauncherConfig config, bool coldStart, CandidateSet cands, bool stale)
   {
@@ -872,7 +872,7 @@ sealed class DshCard : Form
     KeyPreview = true;   // let the card see Up/Down/Enter before the buttons
   }
 
-  /** 5s auto-start countdown for the picker (mode 1); no-op otherwise. */
+  /** 10s auto-start countdown for the picker (mode 1); no-op otherwise. */
   void TickChoice()
   {
     if (choiceMode != 1 || chooseDone) return;

@@ -119,7 +119,7 @@ Uninstall: delete the desktop `DSH Harness.exe` and `~\.dsh\launcher\`; remove t
 | Guarded / race-free | Two-step Full Exit; double-click right after exit waits for the old process to die before cold-starting; single-instance lock on cold start; port-occupied-but-not-ready fails loudly instead of hanging | Automatic |
 | Single file · no build · zero deps | The desktop entry is the **native exe itself** (not a shortcut); prebuilt and committed — installs need no csc; runtime talks to loopback only | Automatic |
 | Install on activation | ~2s after activation the full suite lands, all parameters (port/Node/start command) auto-detected from the environment; content-compare idempotency, refreshed automatically on plugin upgrade | `dsh plugin add` + restart |
-| Pick which DSH to start | With several dsh installs (global / npx cache / source), the cold-start card shows a picker; no click for 5s auto-uses the last successful version (or the highest); switching never rewrites any file; zero-candidate case offers a one-click npx fetch | Double-click the whale (multi-candidate) |
+| Pick which DSH to start | With several dsh installs (global / npx cache / source), the cold-start card shows a picker; no click for 10s auto-uses the last successful version (or the highest); switching never rewrites any file; zero-candidate case offers a one-click npx fetch | Double-click the whale (multi-candidate) |
 
 ---
 
