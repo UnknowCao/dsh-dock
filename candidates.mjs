@@ -123,7 +123,12 @@ export function scanCandidates({ nodePath, launcherDir, port }) {
   }
   for (const repo of sourceCheckoutDirs()) {
     const bin = join(repo, 'apps', 'cli', 'src', 'bin.ts')
-    if (existsSync(bin) && existsSync(join(repo, 'package.json'))) {
+    // Only list checkouts that can actually cold-boot: the recipe runs
+    // `node --import tsx/esm`, which needs tsx installed inside that repo.
+    const hasTsx = existsSync(join(repo, 'node_modules', '.bin', 'tsx.cmd'))
+      || existsSync(join(repo, 'node_modules', '.bin', 'tsx'))
+      || existsSync(join(repo, 'node_modules', 'tsx'))
+    if (existsSync(bin) && existsSync(join(repo, 'package.json')) && hasTsx) {
       found.push({ kind: 'source', pkg: repo, bin, recipe: { args: ['--import', 'tsx/esm', bin, 'web', '--no-open'], cwd: repo } })
     }
   }
@@ -164,7 +169,7 @@ export function scanCandidates({ nodePath, launcherDir, port }) {
 export function buildServerBatch({ port, nodePath, serverArgs, cwd, logPath, errPath }) {
   const q = (value) => `"${String(value).replace(/"/g, '""')}"`
   const args = serverArgs.map((a) => q(a)).join(' ')
-  return [
+  const lines = [
     '@echo off',
     'chcp 65001 >nul',
     `rem dsh-dock cold-start spawner (port ${port}); regenerated on install`,
@@ -182,8 +187,14 @@ export function buildServerBatch({ port, nodePath, serverArgs, cwd, logPath, err
     'ping 127.0.0.1 -n 2 >nul',
     'goto PORT_WAIT',
     ':PORT_FREE',
-    `${q(nodePath)} ${args} > ${q(logPath)} 2> ${q(errPath)}`,
-  ].join('\r\n')
+  ]
+  // Source checkouts resolve `--import tsx/esm` and workspace deps from their
+  // OWN directory — run them there (harmless for absolute-path globals/npx).
+  if (cwd !== undefined && String(cwd).length > 0) {
+    lines.push(`cd /d ${q(cwd)}`)
+  }
+  lines.push(`${q(nodePath)} ${args} > ${q(logPath)} 2> ${q(errPath)}`)
+  return lines.join('\r\n')
 }
 
 /**

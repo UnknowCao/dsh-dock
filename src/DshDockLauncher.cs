@@ -81,6 +81,36 @@ static class DshDockProgram
     catch { return "\"\""; }
   }
 
+  /** Tail of a log file (tokens redacted), for the early-exit failure card. */
+  internal static string ReadLogTail(string path, int maxChars)
+  {
+    try
+    {
+      if (string.IsNullOrEmpty(path) || !File.Exists(path)) return "";
+      using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+        FileShare.ReadWrite | FileShare.Delete))
+      {
+        long start = Math.Max(0, fs.Length - maxChars);
+        fs.Seek(start, SeekOrigin.Begin);
+        int want = (int)(fs.Length - start);
+        byte[] buf = new byte[want];
+        int n = fs.Read(buf, 0, want);
+        string s = System.Text.Encoding.UTF8.GetString(buf, 0, n);
+        s = RedactTokens(s);
+        if (s.Length > 260) s = s.Substring(s.Length - 260);
+        return s.Trim();
+      }
+    }
+    catch { return ""; }
+  }
+
+  /** Replace token values so crash dumps can never leak a session URL. */
+  internal static string RedactTokens(string s)
+  {
+    try { return Regex.Replace(s, "token=[A-Za-z0-9_\\-]+", "token=…"); }
+    catch { return s; }
+  }
+
   [STAThread]
   static void Main()
   {
@@ -575,6 +605,8 @@ sealed class DshCard : Form
   bool spawned = false;
   int deadStreak = 0;
   int gateFailStreak = 0;
+  Process spawnProc = null;
+  DateTime spawnAt = DateTime.MinValue;
   const int W = 340;
   const int HNormal = 184;
   const int HFail = 284;
@@ -985,6 +1017,26 @@ sealed class DshCard : Form
         }
         return;
       }
+      // Early-exit detection: the chosen batch died without ever listening —
+      // fail with the log tail instead of making the user wait out 180 s.
+      if (spawned && !opened && spawnProc != null && spawnAt != DateTime.MinValue
+        && (DateTime.UtcNow - spawnAt).TotalSeconds > 4)
+      {
+        try
+        {
+          if (spawnProc.HasExited && !Probe())
+          {
+            string tail = DshDockProgram.ReadLogTail(cfg.Log + ".err", 300);
+            DshDockProgram.Diag("spawn exited early; err tail len=" + tail.Length);
+            Fail("所选 DSH 启动后立即退出,未能监听端口 " + cfg.Port
+              + "(依赖缺失或需其它启动方式)。");
+            logline.Text = "日志尾部:" + (tail.Length == 0 ? "无" : tail)
+              + "\n日志:" + cfg.Log;
+            return;
+          }
+        }
+        catch { }
+      }
       if (DateTime.UtcNow > deadline)
       {
         Fail("服务器在 180 秒内未就绪(端口 " + cfg.Port
@@ -1124,7 +1176,16 @@ sealed class DshCard : Form
       UseShellExecute = false,
       CreateNoWindow = true,
     };
-    Process.Start(pi);
+    try
+    {
+      spawnProc = Process.Start(pi);
+      spawnAt = DateTime.UtcNow;
+    }
+    catch (Exception ex)
+    {
+      spawnProc = null;
+      throw ex;
+    }
   }
 
   /** Single-spawner lock: of N racing launchers exactly one starts the server;
