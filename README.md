@@ -91,7 +91,7 @@ DSH Dock 把整件事收进两个入口:
 前置条件:Windows 10/11 + DSH `web` profile + Edge(缺失时回落默认浏览器)。无需 Node 配置——安装时自动探测可用 Node(≥ 22.19)。
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/unknowCao-dsh-plugin
+dsh plugin --profile web add github:UnknowCao/dsh-dock
 ```
 
 重启服务器后**无需任何操作**:插件激活时自动从环境提取参数(自身监听端口、Node 路径、启动命令),~2 秒内桌面出现「DSH Harness.exe」(黑鲸鱼图标)+ 侧栏「更多」菜单。日常两步:**双击鲸鱼开,菜单里退**。
@@ -159,7 +159,7 @@ dsh plugin --profile web add github:UnknowCao/unknowCao-dsh-plugin
 ## 文件结构
 
 ```
-unknowCao-dsh-plugin/        # 仓库根(插件包名 dsh-dock)
+dsh-dock/
 ├── index.js                 # Host:launcher_install 工具 + 退出路由 + 烤 launcher.ini/start-server.cmd + 放置桌面 exe
 ├── client.js                # Client:侧栏「更多」菜单 + 退出自动关窗 + 菜单动效
 ├── cordis.patch.yml         # bundle 补丁:编排插入插件行

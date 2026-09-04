@@ -93,7 +93,7 @@ A dark translucent rounded glass card; the centered black whale is a breathing l
 Prerequisites: Windows 10/11 + the DSH `web` profile + Edge (falls back to the default browser if missing). No Node setup needed — the installer auto-detects a usable Node (≥ 22.19).
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/unknowCao-dsh-plugin
+dsh plugin --profile web add github:UnknowCao/dsh-dock
 ```
 
 After restarting the server there is **nothing to do**: on activation the plugin extracts its parameters from the environment (its own listening port, Node path, start command); within ~2s the desktop gets "DSH Harness.exe" (black whale icon) and the sidebar gets the "More" menu. Daily routine: **double-click the whale to open, exit from the menu**.
@@ -161,7 +161,7 @@ More plugins in the ecosystem indexes: [dsh-plugin topic](https://github.com/top
 ## File structure
 
 ```
-unknowCao-dsh-plugin/        # repo root (plugin package name: dsh-dock)
+dsh-dock/
 ├── index.js                 # Host: launcher_install tool + exit route + baked launcher.ini/start-server.cmd + desktop exe placement
 ├── client.js                # Client: sidebar "More" menu + exit auto-close + menu animation
 ├── cordis.patch.yml         # bundle patch: inserts the plugin row into the composition
