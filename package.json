@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "dsh-dock",
-  "version": "0.3.7",
-  "description": "One-click desktop launcher for DSH Harness: automatically installs a prebuilt native app (DSH Harness.exe, whale icon) on the desktop when the plugin activates (parameters auto-detected from the environment); the app starts DSH hidden and opens the GUI as a fullscreen Edge app window. Also turns the sidebar Settings row into a More menu (Settings / Reload / Exit) where Exit stops the server and auto-closes the window.",
+  "version": "0.4.0",
+  "description": "One-click desktop launcher for DSH Harness: automatically installs a prebuilt native app (DSH Harness.exe, whale icon) on the desktop when the plugin activates (parameters auto-detected from the environment); the app starts DSH hidden and opens the GUI as a fullscreen Edge app window, and (v0.4.0) leaves a tray-resident whale with live server status, one-click server restart and optional boot autostart. The sidebar More menu (Settings / Reload / Exit) gains a dsh-dock settings page (tray residency / autostart); Exit stops the server gracefully and auto-closes the window.",
   "license": "MIT",
   "type": "module",
   "repository": {

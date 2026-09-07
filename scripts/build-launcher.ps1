@@ -1,4 +1,4 @@
-# build-launcher.ps1 — compile the prebuilt dsh-dock launcher executable.
+﻿# build-launcher.ps1 — compile the prebuilt dsh-dock launcher executable.
 #
 # One-time at development time: the compiled assets/dsh-dock-launcher.exe is
 # committed to the repository, so end-user installs never need a compiler.
@@ -35,6 +35,7 @@ $compilerArgs = @(
   '/reference:System.Windows.Forms.dll',
   '/reference:System.Drawing.dll',
   '/reference:System.Web.Extensions.dll',
+  '/reference:System.Management.dll',
   $source
 )
 

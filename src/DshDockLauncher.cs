@@ -1,4 +1,4 @@
-// DshDockLauncher.cs — the single dsh-dock desktop launcher executable.
+﻿// DshDockLauncher.cs — the single dsh-dock desktop launcher executable.
 //
 // One native exe replaces the old four-layer chain (.lnk -> wscript ->
 // launch-dsh.vbs -> dsh-card.exe/HTA). Everything lives in this one file:
@@ -35,6 +35,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 [assembly: System.Reflection.AssemblyTitle("dsh-dock-launcher")]
 [assembly: System.Reflection.AssemblyProduct("dsh-dock")]
@@ -138,6 +139,19 @@ static class DshDockProgram
 
     bool alive = ServerAlive(cfg.Url);
     Diag("server alive: " + alive + " (url=" + cfg.Url + ")");
+
+    // --boot: HKCU Run autostart entry. Resident tray + silent server start,
+    // NO window (the preheated fast-open path). Never opens UI on its own.
+    bool boot = Array.IndexOf(Environment.GetCommandLineArgs(), "--boot") >= 0;
+    bool trayAlive = DshTray.IsRunning(cfg);
+    if (boot)
+    {
+      if (trayAlive) { Diag("boot: tray already running -> exit"); return; }
+      Diag("boot mode -> tray");
+      DshTray.Run(cfg, true);
+      return;
+    }
+
     if (alive)
     {
       // Exit/start race: a double-click right after 完全退出 must not open
@@ -158,6 +172,10 @@ static class DshDockProgram
         {
           Diag("quick open: " + url);
           LaunchEdge(url, cfg.Profile);
+          // v0.4.0: a non-boot launcher that just opened the window hands
+          // over to the resident tray (when enabled and none is running)
+          // instead of exiting — the whale stays as the status entry point.
+          MaybeEnterTray(cfg, trayAlive);
           return;
         }
         Thread.Sleep(QuickRetryMs);
@@ -177,13 +195,35 @@ static class DshDockProgram
   /**
    * Cold start entry: run the T2 refresh first so a dsh installed since the
    * last server boot is already selectable, then let the card pick or start.
+   * When the card closes on a LIVE server (window opened / boot finished),
+   * the process may hand over to the resident tray instead of exiting.
    */
   static void RunColdCard(LauncherConfig cfg)
   {
+    // Hygiene: the sidebar stop route's marker cleanup may be lost when the
+    // dying server's spawn chain collapses mid-script (observed in E2E). A
+    // stale marker is behaviorally inert (freshness gate) but untidy — clear
+    // it here, on a path that provably runs.
+    if (File.Exists(cfg.Stopping) && !MarkerActive(cfg.Stopping))
+    {
+      try { File.Delete(cfg.Stopping); } catch { }
+    }
     bool refreshed = DshDockProgram.RunCandidateRefresh(cfg);
     CandidateSet cands = CandidateSet.Load(cfg, refreshed);
     bool stale = cands.HasRealList && !refreshed;
     Application.Run(new DshCard(cfg, true, cands, stale));
+    if (ServerAlive(cfg.Url) && !MarkerActive(cfg.Stopping))
+    {
+      MaybeEnterTray(cfg, DshTray.IsRunning(cfg));
+    }
+  }
+
+  /** Enter tray residency when enabled and no tray is already running. */
+  static void MaybeEnterTray(LauncherConfig cfg, bool trayAlive)
+  {
+    if (trayAlive || !DshTray.ReadTrayStay(cfg)) return;
+    Diag("enter tray residency");
+    DshTray.Run(cfg, false);
   }
 
   // ── quick-path helpers ───────────────────────────────────────────────────
@@ -295,8 +335,12 @@ static class DshDockProgram
     }
   }
 
-  /** Open the GUI as a fullscreen Edge app window (default browser fallback). */
-  internal static void LaunchEdge(string url, string profile)
+  /**
+   * Open the GUI as a fullscreen Edge app window (default browser fallback).
+   * Returns the spawned process (null via shell-open) so the tray can close
+   * the windows it opened on 完全退出.
+   */
+  internal static Process LaunchEdge(string url, string profile)
   {
     string edge = null;
     string[] cands = {
@@ -312,9 +356,10 @@ static class DshDockProgram
     {
       string args = "--app=\"" + url + "\" --start-fullscreen --user-data-dir=\"" + profile
         + "\" --no-first-run --no-default-browser-check";
-      Process.Start(edge, args);
+      return Process.Start(edge, args);
     }
-    else Process.Start(url);
+    Process.Start(url);
+    return null;
   }
 
   /**
@@ -375,6 +420,9 @@ sealed class LauncherConfig
   public string Candidates;
   public string State;
   public string Refresh;
+  // v0.4.0 tray-resident support.
+  public string Settings;
+  public string Manifest;
 
   public int Port
   {
@@ -417,6 +465,8 @@ sealed class LauncherConfig
       else if (key == "CANDIDATES") cfg.Candidates = value;
       else if (key == "STATE") cfg.State = value;
       else if (key == "REFRESH") cfg.Refresh = value;
+      else if (key == "SETTINGS") cfg.Settings = value;
+      else if (key == "MANIFEST") cfg.Manifest = value;
     }
     if (string.IsNullOrEmpty(cfg.Url) || string.IsNullOrEmpty(cfg.Log)
       || string.IsNullOrEmpty(cfg.Batch) || string.IsNullOrEmpty(cfg.Profile))
@@ -1464,5 +1514,554 @@ sealed class DshCard : Form
     path.AddArc(0, h - r, r, r, 90, 90);
     path.CloseFigure();
     return new Region(path);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v0.4.0 tray residency: the whale lives in the notification area as the
+// permanent status entry point. Tooltip reflects server state (probe on a
+// background thread — a dead port blocks up to 700ms); the menu offers
+// 打开 DSH / 重启服务器 / ☑开机自启 / ⏻完全退出 (single click, per user
+// preference). The tray stamps its PID into launcher.json so the host stop
+// route can clean it up, and its 完全退出 mirrors the host sequence:
+// marker -> kill listener -> close every dock Edge window (by profile
+// identity, not spawn bookkeeping) -> clear marker -> vanish.
+// ─────────────────────────────────────────────────────────────────────────────
+
+sealed class DshTray
+{
+  const string RunKeySub = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+  const string RunValueName = "dsh-dock";
+  const int PollMs = 1500;
+
+  readonly LauncherConfig cfg;
+  readonly bool boot;
+  readonly NotifyIcon icon = new NotifyIcon();
+  readonly List<Process> edgeWindows = new List<Process>();
+  Mutex gate = null; // single-instance mutex held for the tray's lifetime
+  Thread poller = null;
+  volatile bool stopping = false;
+  volatile bool pendingOpen = false;   // open the window the moment ready
+  volatile bool spawnWanted = false;   // spawn the batch when port is dead
+  bool spawned = false;
+  Process spawnProc = null;
+  DateTime spawnAt = DateTime.MinValue;
+  string state = "starting";           // starting | running | dead | failed | restarting
+  MenuItem exitItem = null;
+  DateTime lastHttpCheck = DateTime.MinValue;
+
+  DshTray(LauncherConfig config, bool boot)
+  {
+    this.cfg = config;
+    this.boot = boot;
+  }
+
+  // ── lifecycle ────────────────────────────────────────────────────────────
+
+  /** Single-instance gate: ONE tray icon, ever, across BOTH binary copies
+   * (suite dsh-dock-launcher.exe and the desktop "DSH Harness.exe" differ
+   * in process NAME, so a name-based liveness check misfired and let a
+   * second icon in — a mutex is name-agnostic, race-free, and self-releases
+   * when the holder dies). */
+  static string MutexName(LauncherConfig cfg)
+  {
+    return "Local\\dsh-dock-tray-" + cfg.Port;
+  }
+
+  /** True when a tray holder exists (mutex object alive == process alive). */
+  internal static bool IsRunning(LauncherConfig cfg)
+  {
+    try
+    {
+      Mutex existing = Mutex.OpenExisting(MutexName(cfg));
+      existing.Dispose();
+      return true;
+    }
+    catch { return false; }
+  }
+
+  /** Create the tray and run its message loop until 完全退出. Losing the
+   * single-instance race (another tray already holds the mutex) exits
+   * silently — the winner keeps the one and only icon. */
+  internal static void Run(LauncherConfig cfg, bool boot)
+  {
+    Mutex gate = new Mutex(false, MutexName(cfg));
+    if (!gate.WaitOne(0))
+    {
+      DshDockProgram.Diag("tray: mutex held by another instance -> exit");
+      return;
+    }
+    var tray = new DshTray(cfg, boot);
+    tray.gate = gate;
+    tray.Start();
+    Application.Run();
+    DshDockProgram.Diag("tray loop exited");
+  }
+
+  void Start()
+  {
+    try
+    {
+      icon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+    }
+    catch { icon.Icon = SystemIcons.Application; }
+    icon.Visible = true;
+    icon.Text = "DSH 启动中…";
+    BuildMenu();
+    icon.MouseClick += delegate(object s, MouseEventArgs e)
+    {
+      if (e.Button == MouseButtons.Left) OpenDsh();
+    };
+    WriteTrayPid(cfg, System.Diagnostics.Process.GetCurrentProcess().Id);
+    Application.ApplicationExit += delegate { Cleanup(); };
+    // Initial facts: alive -> running; dead -> spawn only in boot mode
+    // (a user-visible cold start belongs to the card, not the tray).
+    bool alive = DshDockProgram.ServerAlive(cfg.Url);
+    state = alive ? "running" : (boot ? "starting" : "dead");
+    if (boot && !alive)
+    {
+      spawnWanted = true;
+      pendingOpen = false;
+    }
+    poller = new Thread(PollerLoop);
+    poller.IsBackground = true;
+    poller.Name = "dsh-dock-tray-poller";
+    poller.Start();
+  }
+
+  void Cleanup()
+  {
+    stopping = true;
+    WriteTrayPid(cfg, 0);
+    try { icon.Visible = false; icon.Dispose(); } catch { }
+    try { if (gate != null) gate.ReleaseMutex(); } catch { }
+    try { if (gate != null) gate.Dispose(); } catch { }
+  }
+
+  // ── menu ─────────────────────────────────────────────────────────────────
+
+  void BuildMenu()
+  {
+    var open = new MenuItem("打开 DSH", delegate { OpenDsh(); });
+    var restart = new MenuItem("重启服务器", delegate { RestartServer(); });
+    var auto = new MenuItem("开机自启", delegate { ToggleAutostart(); });
+    auto.Checked = ReadAutostart();
+    exitItem = new MenuItem("完全退出", delegate { ExitClicked(); });
+    var sep = new MenuItem("-");
+    var menu = new ContextMenu(new MenuItem[] { open, restart, auto, sep, exitItem });
+    // Refresh the autostart checkmark on EVERY popup: the state can also be
+    // written by the web settings page (settings/set -> registry), and a
+    // once-baked checkmark would show a stale state from tray start-up.
+    menu.Popup += delegate { auto.Checked = ReadAutostart(); };
+    icon.ContextMenu = menu;
+  }
+
+  /** 打开 DSH (also tray left-click): open now, or spawn + open when ready. */
+  void OpenDsh()
+  {
+    if (stopping) return;
+    DshDockProgram.Diag("tray: open");
+    if (DshDockProgram.ServerAlive(cfg.Url))
+    {
+      if (TryOpenFromLog()) return;
+      state = "starting"; // alive but not ready yet — open when it is
+      pendingOpen = true;
+      return;
+    }
+    // Server dead: cold-start it from the tray (card-less), open when ready.
+    pendingOpen = true;
+    spawnWanted = true;
+    state = "starting";
+  }
+
+  /**
+   * 重启服务器: close every dock window -> marker -> kill the listener ->
+   * wait the port down -> clear the marker -> spawn the batch again -> open
+   * ONE fresh window when ready (user preference: no stale pre-restart pages;
+   * their tokens died with the old server anyway). This is the first-class
+   * restart the plugin never had (previously: full exit + double-click,
+   * ~15s of manual steps).
+   */
+  void RestartServer()
+  {
+    if (stopping || state == "restarting") return;
+    DshDockProgram.Diag("tray: restart server");
+    state = "restarting";
+    pendingOpen = true;
+    // User preference: kill old dock windows first — they hold dead tokens
+    // once the listener dies; only the freshly auto-opened window remains.
+    CloseDockWindows();
+    WriteStoppingMarker();
+    foreach (int pid in ListenerPids())
+    {
+      try { System.Diagnostics.Process.GetProcessById(pid).Kill(); }
+      catch { }
+    }
+    // The poller's spawn path takes over once the port is really down.
+    spawnWanted = true;
+    spawned = false;
+  }
+
+  /** ☑开机自启: toggle the HKCU Run entry pointing at the suite exe --boot. */
+  void ToggleAutostart()
+  {
+    try
+    {
+      bool on = !ReadAutostart();
+      WriteAutostart(on, cfg);
+      icon.ContextMenu.MenuItems[2].Checked = on;
+      DshDockProgram.Diag("tray: autostart " + (on ? "on" : "off"));
+    }
+    catch (Exception e)
+    {
+      DshDockProgram.Diag("tray: autostart FAIL: " + e.Message);
+      Balloon("开机自启设置失败: " + e.Message, ToolTipIcon.Error);
+    }
+  }
+
+  /** 完全退出 — single click (user preference: no two-step guard on the
+   * tray menu; the sidebar menu keeps its in-page two-step arm). */
+  void ExitClicked()
+  {
+    if (stopping) return;
+    if (exitItem != null) exitItem.Text = "完全退出";
+    DshDockProgram.Diag("tray: full exit");
+    stopping = true;
+    WriteStoppingMarker();
+    foreach (int pid in ListenerPids())
+    {
+      try { System.Diagnostics.Process.GetProcessById(pid).Kill(); }
+      catch { }
+    }
+    DshDockProgram.WaitForPortDown(cfg, 15000);
+    CloseDockWindows();
+    TryDeleteMarker();
+    Application.Exit();
+  }
+
+  /**
+   * Close every DSH-dock Edge window — by IDENTITY (command line carries the
+   * dedicated --user-data-dir profile), not by spawn bookkeeping. Windows
+   * opened by a previous/double-click launcher outlive their spawner, and a
+   * tray that restarted mid-session would otherwise orphan them. Graceful
+   * close first, force-kill the survivors after a short grace.
+   */
+  void CloseDockWindows()
+  {
+    string profile = cfg.Profile ?? "";
+    var targets = new List<int>();
+    try
+    {
+      var searcher = new System.Management.ManagementObjectSearcher(
+        "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name = 'msedge.exe'");
+      foreach (var o in searcher.Get())
+      {
+        string cmd = Convert.ToString(o["CommandLine"]);
+        if (string.IsNullOrEmpty(cmd) || profile.Length == 0) continue;
+        if (cmd.IndexOf(profile, StringComparison.OrdinalIgnoreCase) < 0) continue;
+        targets.Add(Convert.ToInt32(o["ProcessId"]));
+      }
+      searcher.Dispose();
+    }
+    catch (Exception e) { DshDockProgram.Diag("CloseDockWindows enum FAIL: " + e.Message); }
+    // Fallback: tracked windows when WMI enumeration failed.
+    if (targets.Count == 0)
+    {
+      foreach (Process p in edgeWindows)
+      {
+        try { if (!p.HasExited) targets.Add(p.Id); } catch { }
+      }
+    }
+    foreach (int pid in targets)
+    {
+      try { System.Diagnostics.Process.GetProcessById(pid).CloseMainWindow(); }
+      catch { }
+    }
+    System.Threading.Thread.Sleep(900);
+    foreach (int pid in targets)
+    {
+      try
+      {
+        var p = System.Diagnostics.Process.GetProcessById(pid);
+        if (!p.HasExited) p.Kill();
+      }
+      catch { }
+    }
+    edgeWindows.Clear();
+  }
+
+  // ── poller (background thread — probes block) ────────────────────────────
+
+  void PollerLoop()
+  {
+    while (!stopping)
+    {
+      try { PollOnce(); }
+      catch (Exception ex) { DshDockProgram.Diag("tray poll FAIL: " + ex.Message); }
+      if (stopping) break;
+      UpdateTooltip();
+      Thread.Sleep(PollMs);
+    }
+    DshDockProgram.Diag("tray poller exit");
+  }
+
+  void PollOnce()
+  {
+    if (stopping) return;
+    // Sidebar 重启服务器 request (host wrote .restart.request; the tray owns
+    // the restart sequence because the host cannot restart its own death).
+    if (state != "restarting" && state != "starting")
+    {
+      string rp = RestartPath(cfg);
+      if (rp != null && File.Exists(rp))
+      {
+        try { File.Delete(rp); } catch { }
+        DshDockProgram.Diag("tray: restart requested from sidebar");
+        RestartServer();
+      }
+    }
+    bool alive = DshDockProgram.ServerAlive(cfg.Url);
+    if (alive)
+    {
+      state = "running";
+      spawned = false;
+      if (pendingOpen && (DateTime.UtcNow - lastHttpCheck).TotalMilliseconds
+        >= DshDockProgram.GateThrottleMs)
+      {
+        lastHttpCheck = DateTime.UtcNow;
+        if (TryOpenFromLog()) pendingOpen = false;
+      }
+      return;
+    }
+    // Port dead.
+    if (pendingOpen) spawnWanted = true;
+    if (spawnWanted && !spawned)
+    {
+      // Restart flow: the old listener must be fully down before a new one
+      // may take the port (start-server.cmd waits internally too, but the
+      // marker must not read "fresh" or the next double-click would stall).
+      if (state == "restarting")
+      {
+        if (!DshDockProgram.WaitForPortDown(cfg, 15000)) return; // still dying
+        TryDeleteMarker();
+      }
+      spawned = true;
+      spawnAt = DateTime.UtcNow;
+      try
+      {
+        DshDockProgram.Diag("tray spawn batch: " + cfg.Batch);
+        var pi = new ProcessStartInfo("cmd.exe", "/c \"" + cfg.Batch + "\"")
+        {
+          UseShellExecute = false,
+          CreateNoWindow = true,
+        };
+        spawnProc = System.Diagnostics.Process.Start(pi);
+        state = "starting";
+      }
+      catch (Exception ex)
+      {
+        DshDockProgram.Diag("tray spawn FAIL: " + ex.Message);
+        state = "failed";
+        spawnWanted = false;
+        Balloon("服务器启动失败: " + ex.Message + "\n日志:" + cfg.Log, ToolTipIcon.Error);
+      }
+      return;
+    }
+    // Early death detection: the spawned batch exited without listening.
+    if (spawned && spawnProc != null && (DateTime.UtcNow - spawnAt).TotalSeconds > 4)
+    {
+      try
+      {
+        if (spawnProc.HasExited)
+        {
+          state = "failed";
+          spawned = false;
+          spawnWanted = false;
+          pendingOpen = false;
+          Balloon("服务器启动后立即退出(端口 " + cfg.Port
+            + ")。日志:" + cfg.Log, ToolTipIcon.Error);
+        }
+      }
+      catch { }
+      return;
+    }
+    if (state == "running") state = "dead"; // died without an exit request
+  }
+
+  void UpdateTooltip()
+  {
+    string text;
+    if (state == "running") text = "DSH 运行中 · 端口 " + cfg.Port;
+    else if (state == "starting" || state == "restarting") text = "DSH 启动中… · 端口 " + cfg.Port;
+    else if (state == "failed") text = "DSH 启动失败 · 日志:" + cfg.Log;
+    else text = "服务器未运行 · 点左键打开";
+    try { icon.Text = text.Length > 63 ? text.Substring(0, 63) : text; }
+    catch { }
+  }
+
+  void Balloon(string msg, ToolTipIcon kind)
+  {
+    try
+    {
+      icon.ShowBalloonTip(6000, "DSH Dock", msg, kind);
+    }
+    catch { }
+  }
+
+  /** Re-read the log, health-gate the token URL, open + adopt the window. */
+  bool TryOpenFromLog()
+  {
+    string url = DshDockProgram.ReadTokenUrl(cfg.Log);
+    if (url == null) return false;
+    if (!DshDockProgram.HttpReady(url)) return false;
+    DshDockProgram.Diag("tray open: " + url);
+    Process p = DshDockProgram.LaunchEdge(url, cfg.Profile);
+    if (p != null) edgeWindows.Add(p);
+    return true;
+  }
+
+  // ── shared state files / registry ────────────────────────────────────────
+
+  /** Derive the manifest path (old inis lack the v0.4.0 keys). */
+  static string ManifestPath(LauncherConfig cfg)
+  {
+    if (!string.IsNullOrEmpty(cfg.Manifest)) return cfg.Manifest;
+    string dir = string.IsNullOrEmpty(cfg.Log) ? null : Path.GetDirectoryName(cfg.Log);
+    return dir == null ? null : Path.Combine(dir, "launcher.json");
+  }
+
+  static string SettingsPath(LauncherConfig cfg)
+  {
+    if (!string.IsNullOrEmpty(cfg.Settings)) return cfg.Settings;
+    string dir = string.IsNullOrEmpty(cfg.Log) ? null : Path.GetDirectoryName(cfg.Log);
+    return dir == null ? null : Path.Combine(dir, "settings.json");
+  }
+
+  /** Sidebar restart-request file (next to the other suite files). */
+  static string RestartPath(LauncherConfig cfg)
+  {
+    string dir = string.IsNullOrEmpty(cfg.Log) ? null : Path.GetDirectoryName(cfg.Log);
+    return dir == null ? null : Path.Combine(dir, ".restart.request");
+  }
+
+  /** trayStay setting (default on when the file is missing/unreadable). */
+  internal static bool ReadTrayStay(LauncherConfig cfg)
+  {
+    try
+    {
+      string path = SettingsPath(cfg);
+      if (string.IsNullOrEmpty(path) || !File.Exists(path)) return true;
+      var ser = new System.Web.Script.Serialization.JavaScriptSerializer();
+      var root = ser.DeserializeObject(File.ReadAllText(path, System.Text.Encoding.UTF8))
+        as Dictionary<string, object>;
+      if (root != null && root.ContainsKey("trayStay")) return Convert.ToBoolean(root["trayStay"]);
+    }
+    catch { }
+    return true;
+  }
+
+  /** Stamp (or clear, pid<=0) trayPid inside launcher.json, merging keys. */
+  internal static void WriteTrayPid(LauncherConfig cfg, int pid)
+  {
+    try
+    {
+      string path = ManifestPath(cfg);
+      if (string.IsNullOrEmpty(path)) return;
+      var ser = new System.Web.Script.Serialization.JavaScriptSerializer();
+      Dictionary<string, object> root = null;
+      try
+      {
+        root = ser.DeserializeObject(File.ReadAllText(path, System.Text.Encoding.UTF8))
+          as Dictionary<string, object>;
+      }
+      catch { }
+      if (root == null) root = new Dictionary<string, object>();
+      if (pid > 0) root["trayPid"] = pid;
+      else root.Remove("trayPid");
+      File.WriteAllText(path, ser.Serialize(root), new System.Text.UTF8Encoding(false));
+    }
+    catch (Exception e) { DshDockProgram.Diag("WriteTrayPid FAIL: " + e.Message); }
+  }
+
+  /** Suite exe the Run entry launches (stable path; falls back to self). */
+  static string AutostartExe(LauncherConfig cfg)
+  {
+    string dir = string.IsNullOrEmpty(cfg.Log) ? null : Path.GetDirectoryName(cfg.Log);
+    string exe = dir == null ? null : Path.Combine(dir, "dsh-dock-launcher.exe");
+    if (!string.IsNullOrEmpty(exe) && File.Exists(exe)) return exe;
+    return Application.ExecutablePath;
+  }
+
+  internal static bool ReadAutostart()
+  {
+    try
+    {
+      using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKeySub))
+      {
+        return k != null && k.GetValue(RunValueName) != null;
+      }
+    }
+    catch { return false; }
+  }
+
+  internal static void WriteAutostart(bool on, LauncherConfig cfg)
+  {
+    using (RegistryKey k = Registry.CurrentUser.CreateSubKey(RunKeySub))
+    {
+      if (on) k.SetValue(RunValueName, "\"" + AutostartExe(cfg) + "\" --boot");
+      else k.DeleteValue(RunValueName, false);
+    }
+  }
+
+  // ── stop helpers (mirror the host route's semantics) ─────────────────────
+
+  /** PIDs LISTENING on our port (netstat, ~100ms; never Get-NetTCPConnection). */
+  List<int> ListenerPids()
+  {
+    var ids = new List<int>();
+    try
+    {
+      var pi = new ProcessStartInfo("netstat", "-ano")
+      {
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardOutput = true,
+      };
+      using (Process p = Process.Start(pi))
+      {
+        string outText = p.StandardOutput.ReadToEnd();
+        p.WaitForExit(3000);
+        string portToken = ":" + cfg.Port + " ";
+        foreach (string raw in outText.Split('\n'))
+        {
+          string line = raw.Trim();
+          if (!line.StartsWith("TCP") || !line.Contains("LISTENING")) continue;
+          if (!line.Contains(portToken)) continue;
+          string[] parts = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+          int pid;
+          if (int.TryParse(parts[parts.Length - 1], out pid) && pid > 0) ids.Add(pid);
+        }
+      }
+    }
+    catch (Exception e) { DshDockProgram.Diag("ListenerPids FAIL: " + e.Message); }
+    // Never kill ourselves, whatever netstat says.
+    int self = Process.GetCurrentProcess().Id;
+    return ids.FindAll(delegate(int id) { return id != self; });
+  }
+
+  void WriteStoppingMarker()
+  {
+    try
+    {
+      long epoch = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
+      File.WriteAllText(cfg.Stopping, epoch.ToString());
+    }
+    catch { }
+  }
+
+  void TryDeleteMarker()
+  {
+    try { if (File.Exists(cfg.Stopping)) File.Delete(cfg.Stopping); }
+    catch { }
   }
 }

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-dock — one-click desktop launcher for DSH Harness (Windows).
  *
  * Architecture (v2, single native entry):
@@ -35,7 +35,21 @@ const LAUNCHER_DIR = join(homedir(), '.dsh', 'launcher')
 const LOG_FILE = join(LAUNCHER_DIR, 'dsh-server.log')
 const BATCH_FILE = join(LAUNCHER_DIR, 'start-server.cmd') // hidden spawner + log redirection
 const INI_FILE = join(LAUNCHER_DIR, 'launcher.ini') // runtime config read by the exe
-const MANIFEST_FILE = join(LAUNCHER_DIR, 'launcher.json') // { host, port, desktopDir }
+const MANIFEST_FILE = join(LAUNCHER_DIR, 'launcher.json') // { host, port, desktopDir, trayPid }
+/**
+ * dsh-dock user settings shared by the host routes, the web settings page
+ * (client.js) and the tray exe. { trayStay: boolean } — autostart lives in
+ * the HKCU Run registry key (its presence IS the state), trayStay lives here.
+ */
+const SETTINGS_FILE = join(LAUNCHER_DIR, 'settings.json')
+/**
+ * Restart-request file (v0.4.0): the sidebar 重启服务器 menu item writes this;
+ * the resident tray polls for it and performs its battle-tested RestartServer
+ * sequence (marker -> kill listener -> wait port down -> respawn -> open).
+ * The host cannot restart itself (its own death is the point), so the tray —
+ * an independent process — is the executor.
+ */
+const RESTART_REQUEST = join(LAUNCHER_DIR, '.restart.request')
 const EDGE_APP_PROFILE = join(LAUNCHER_DIR, 'edge-app-profile')
 const LOCK_FILE = join(LAUNCHER_DIR, '.starting.lock')
 /**
@@ -243,6 +257,10 @@ function buildLauncherIni(options) {
     `CANDIDATES=${b64(CANDIDATES_FILE)}`,
     `STATE=${b64(STATE_FILE)}`,
     `REFRESH=${b64(REFRESH_SCRIPT)}`,
+    // v0.4.0: user-settings file shared with the tray exe ({ trayStay }),
+    // plus the manifest the tray stamps its PID into.
+    `SETTINGS=${b64(SETTINGS_FILE)}`,
+    `MANIFEST=${b64(MANIFEST_FILE)}`,
     '',
   ].join('\r\n')
 }
@@ -382,10 +400,20 @@ function removeLegacyLnk(desktopDir, options) {
   }
 }
 
-/** Persist the install manifest ({ host, port, desktopDir }). */
+/** Persist the install manifest ({ host, port, desktopDir, trayPid }). The
+ * tray exe stamps trayPid here; merging (not replacing) keeps it across the
+ * re-bakes every server boot performs. */
 function persistManifest(options, desktopDir) {
+  const previous = readManifestSafe()
   writeFileSync(MANIFEST_FILE,
-    `${JSON.stringify({ host: options.host, port: options.port, desktopDir }, null, 2)}\n`, 'utf8')
+    `${JSON.stringify({
+      host: options.host,
+      port: options.port,
+      desktopDir,
+      ...(previous !== undefined && Number.isInteger(previous.trayPid)
+        ? { trayPid: previous.trayPid }
+        : {}),
+    }, null, 2)}\n`, 'utf8')
 }
 
 /** Read the install manifest (launcher.json), or undefined. */
@@ -648,6 +676,77 @@ function readInstalledPort() {
   }
 }
 
+// ── tray-resident settings (v0.4.0) ────────────────────────────────────────
+
+/** Read dsh-dock user settings ({ trayStay }, defaults when absent/unreadable). */
+export function readSettings() {
+  const defaults = { trayStay: true }
+  try {
+    const parsed = JSON.parse(readFileSync(SETTINGS_FILE, 'utf8'))
+    return {
+      trayStay: typeof parsed.trayStay === 'boolean' ? parsed.trayStay : defaults.trayStay,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+/** Persist dsh-dock user settings (content-gated). */
+function writeSettings(settings) {
+  mkdirSync(LAUNCHER_DIR, { recursive: true })
+  writeIfChanged(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`)
+}
+
+/** HKCU Run key for boot autostart (the entry's presence IS the state). */
+const AUTOSTART_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
+const AUTOSTART_VALUE_NAME = 'dsh-dock'
+/** The command the Run entry launches: the suite exe with --boot (tray +
+ * silent server start, no window — the preheated fast-open path). */
+function autostartCommand() {
+  return `"${LAUNCHER_EXE}" --boot`
+}
+
+/** Whether the HKCU Run autostart entry currently exists. */
+function readAutostart() {
+  const probe = spawnSync('reg', ['query', AUTOSTART_RUN_KEY, '/v', AUTOSTART_VALUE_NAME],
+    { encoding: 'utf8' })
+  return probe.status === 0 && (probe.stdout ?? '').includes(AUTOSTART_VALUE_NAME)
+}
+
+/** Create or remove the HKCU Run autostart entry. */
+function writeAutostart(enabled) {
+  const argv = enabled
+    ? ['add', AUTOSTART_RUN_KEY, '/v', AUTOSTART_VALUE_NAME, '/t', 'REG_SZ', '/d', autostartCommand(), '/f']
+    : ['delete', AUTOSTART_RUN_KEY, '/v', AUTOSTART_VALUE_NAME, '/f']
+  const result = spawnSync('reg', argv, { encoding: 'utf8' })
+  // Deleting an already-missing value is fine; a failed add is the real error.
+  if (enabled && result.status !== 0) {
+    throw new Error(`failed to write autostart registry entry: ${result.stderr || result.stdout}`)
+  }
+}
+
+/**
+ * Stop the resident tray exe (v0.4.0) SYNCHRONOUSLY, before the response is
+ * written and before this server stops itself. Everything ordered after the
+ * host's own death is unreliable (E2E: children of the dying chain were
+ * observed not to run to completion); here, while the process is definitely
+ * alive, a short synchronous PowerShell name-checks the PID so a recycled
+ * one can never take an innocent process down with the whale.
+ * @param {number} trayPid - tray PID from the manifest (0 = none).
+ */
+function stopTraySync(trayPid) {
+  if (!Number.isInteger(trayPid) || trayPid <= 0) return
+  const script = [
+    `$t = Get-Process -Id ${trayPid} -ErrorAction SilentlyContinue`,
+    `if ($t -and ($t.ProcessName -like 'dsh-dock*' -or $t.ProcessName -like 'DSH Harness*')) { Stop-Process -Id ${trayPid} -Force -ErrorAction SilentlyContinue }`,
+  ].join('; ')
+  try {
+    spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script],
+      { timeout: 4000, stdio: 'ignore' })
+    logStop('stop', `tray pid ${trayPid} stop dispatched`)
+  } catch { /* best-effort; a surviving tray self-heals via its own state probe */ }
+}
+
 /**
  * Register the launcher_install tool on `ctx.tools` and the /launcher/api/stop
  * route (client Exit action).
@@ -771,6 +870,11 @@ export function apply(ctx) {
           mkdirSync(LAUNCHER_DIR, { recursive: true })
           writeFileSync(STOPPING_MARKER, String(Math.floor(Date.now() / 1000)), 'utf8')
         } catch { /* marker is best-effort */ }
+        // v0.4.0: the whale must vanish with the server. Kill the tray
+        // BEFORE the response (the process is provably alive here); anything
+        // after the host's own exit is unreliable.
+        const manifest = readManifestSafe()
+        stopTraySync(manifest !== undefined ? manifest.trayPid : 0)
         writeJson(res, 200, { ok: true, note: 'server is stopping gracefully; sessions were persisted' })
         if (typeof exit === 'function') {
           // Graceful path (ctx.appExit provided by the dsh launcher): dispose
@@ -804,5 +908,103 @@ export function apply(ctx) {
         }
       },
     }), 'dsh-dock: /launcher/api/stop route')
+    // v0.4.0 settings routes: the web settings page (client.js) reads and
+    // writes trayStay / autostart through the same loopback-only trust fence
+    // as the stop route (both are machine-local power toggles).
+    const settingsRoutes = ['get', 'set'].map(mode => webCtx.webServer.register({
+      kind: 'exact',
+      path: `/launcher/api/settings/${mode}`,
+      handler: async (req, res) => {
+        const webRuntime = ctx.get('webRuntime')
+        const trustedHosts = webRuntime !== undefined && webRuntime.trustedHosts !== undefined
+          ? webRuntime.trustedHosts
+          : []
+        if (!isTrustedStopRequest(req, trustedHosts) || req.method !== 'POST') {
+          writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+          return
+        }
+        if (process.platform !== 'win32') {
+          writeJson(res, 501, { ok: false, error: { code: 'unsupported', message: 'windows only' } })
+          return
+        }
+        if (mode === 'get') {
+          writeJson(res, 200, {
+            ok: true,
+            trayStay: readSettings().trayStay,
+            autostart: readAutostart(),
+          })
+          return
+        }
+        let body = ''
+        req.setEncoding('utf8')
+        for await (const chunk of req) body += chunk
+        let parsed = {}
+        try { parsed = JSON.parse(body) } catch { /* empty body = no changes */ }
+        try {
+          const settings = readSettings()
+          if (typeof parsed.trayStay === 'boolean') settings.trayStay = parsed.trayStay
+          writeSettings(settings)
+          if (parsed.autostart === true || parsed.autostart === false) writeAutostart(parsed.autostart)
+          writeJson(res, 200, {
+            ok: true,
+            trayStay: settings.trayStay,
+            autostart: readAutostart(),
+          })
+        } catch (e) {
+          writeJson(res, 500, { ok: false, error: { code: 'write-failed', message: e.message } })
+        }
+      },
+    }))
+    ctx.effect(() => () => { for (const dispose of settingsRoutes) dispose() }, 'dsh-dock: settings routes')
+    // v0.4.0 restart route: the sidebar 重启服务器 menu item. Writes the
+    // restart-request file for the resident tray to act on (the tray owns
+    // the restart sequence — the host cannot restart its own death). Same
+    // loopback trust fence as the other launcher routes.
+    ctx.effect(() => webCtx.webServer.register({
+      kind: 'exact',
+      path: '/launcher/api/restart',
+      handler: async (req, res) => {
+        const webRuntime = ctx.get('webRuntime')
+        const trustedHosts = webRuntime !== undefined && webRuntime.trustedHosts !== undefined
+          ? webRuntime.trustedHosts
+          : []
+        if (!isTrustedStopRequest(req, trustedHosts) || req.method !== 'POST') {
+          writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+          return
+        }
+        if (process.platform !== 'win32') {
+          writeJson(res, 501, { ok: false, error: { code: 'unsupported', message: 'windows only' } })
+          return
+        }
+        const manifest = readManifestSafe()
+        const trayPid = manifest !== undefined && Number.isInteger(manifest.trayPid)
+          ? manifest.trayPid
+          : 0
+        let trayActive = false
+        if (trayPid > 0) {
+          const probe = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command',
+            `$t = Get-Process -Id ${trayPid} -ErrorAction SilentlyContinue; if ($t -and ($t.ProcessName -like 'dsh-dock*' -or $t.ProcessName -like 'DSH Harness*')) { exit 0 } else { exit 1 }`],
+          { encoding: 'utf8', timeout: 4000 })
+          trayActive = probe.status === 0
+        }
+        if (!trayActive) {
+          writeJson(res, 200, {
+            ok: true,
+            accepted: false,
+            note: '托盘未驻留：请先双击桌面鲸鱼（或在设置中开启托盘常驻），再使用重启服务器。',
+          })
+          return
+        }
+        try {
+          mkdirSync(LAUNCHER_DIR, { recursive: true })
+          writeFileSync(RESTART_REQUEST, String(Date.now()), 'utf8')
+        } catch (e) {
+          writeJson(res, 500, { ok: false, error: { code: 'write-failed', message: e.message } })
+          return
+        }
+        logStop('restart', `requested via sidebar; tray pid ${trayPid} will execute`)
+        writeJson(res, 200, { ok: true, accepted: true, note: '托盘将重启服务器，就绪后自动开窗' })
+      },
+    }), 'dsh-dock: /launcher/api/restart route')
   })
 }

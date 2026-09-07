@@ -1,4 +1,4 @@
-/* dsh-dock client face (hand-written, zero build step).
+﻿/* dsh-dock client face (hand-written, zero build step).
  *
  * Turns the sidebar Settings row into a menu bar: this cell renders a trigger
  * that looks like a shell foot control (☰ 更多 ▴ wide, ☰ circle in the rail)
@@ -30,6 +30,83 @@ window.__ModuleLoader__.load({
   id: 'dsh-dock',
   factory: (require) => {
     const React = require('react')
+
+    // ── i18n: the plugin's own chrome follows the harness display language ──
+    // Strings live in a `dsh-dock` locale namespace registered through the
+    // host's `locale` service (bind/register/subscribe). Components translate
+    // at render time and re-render on a locale switch via the revision tick.
+    const DICT_ZH = {
+      'menu.trigger': '更多',
+      'menu.triggerTitle': '更多（设置 / 刷新 / 重启服务器 / 完全退出）',
+      'menu.footerLabel': '更多菜单（设置 / 完全退出）',
+      'menu.settings': '设置',
+      'menu.reload': '刷新',
+      'menu.restartServer': '重启服务器',
+      'menu.fullExit': '完全退出',
+      'menu.confirmFullExit': '确认完全退出?',
+      'section.title': 'DSH Dock（启动器）',
+      'setting.trayStay': '托盘常驻',
+      'setting.trayStayDesc': '双击桌面鲸鱼开窗后，鲸鱼驻留系统托盘：悬停显示服务器状态，左键秒开；关窗不停服。关闭则恢复开窗即退的短命行为。',
+      'setting.autostart': '开机自启',
+      'setting.autostartDesc': 'Windows 登录后静默驻留托盘并在后台预热服务器（不开窗），点托盘即开。写入当前用户注册表 Run 键，可随时关闭。',
+      'setting.loading': '正在读取设置…',
+      'setting.readError': '设置读取失败（插件路由不可用）',
+      'setting.saveError': '保存失败，已还原',
+      'overlay.title': '服务器已完全退出',
+      'overlay.body': '会话已实时保存，可双击桌面「DSH Harness」快捷方式重新启动。',
+      'overlay.close': '关闭本窗口',
+      'overlay.hintTrying': '服务器已退出；本窗口正在尝试自动关闭…',
+      'overlay.hintBlocked': '浏览器拒绝了自动关闭，请直接关闭本窗口或标签页。',
+    }
+    const DICT_EN = {
+      'menu.trigger': 'More',
+      'menu.triggerTitle': 'More (Settings / Reload / Restart server / Full exit)',
+      'menu.footerLabel': 'More menu (Settings / Full exit)',
+      'menu.settings': 'Settings',
+      'menu.reload': 'Reload',
+      'menu.restartServer': 'Restart server',
+      'menu.fullExit': 'Full exit',
+      'menu.confirmFullExit': 'Confirm full exit?',
+      'section.title': 'DSH Dock (launcher)',
+      'setting.trayStay': 'Tray residency',
+      'setting.trayStayDesc': 'After the desktop whale opens a window, it stays in the notification area: hover shows the server state, left-click reopens instantly, closing the window never stops the server. Turn it off to restore the short-lived launcher behavior.',
+      'setting.autostart': 'Start DSH on login',
+      'setting.autostartDesc': 'After you sign in to Windows the whale sits in the tray and preheats the server in the background (no window); one click opens instantly. Written to the per-user Run key; can be turned off anytime.',
+      'setting.loading': 'Loading settings…',
+      'setting.readError': 'Failed to read settings (plugin routes unavailable)',
+      'setting.saveError': 'Save failed — reverted',
+      'overlay.title': 'Server has fully exited',
+      'overlay.body': 'Sessions were saved in real time. Double-click the desktop "DSH Harness" shortcut to start again.',
+      'overlay.close': 'Close this window',
+      'overlay.hintTrying': 'The server exited; this window is trying to close itself…',
+      'overlay.hintBlocked': 'The browser blocked the auto-close — please close this window or tab manually.',
+    }
+    // Locale-service handle + binding; set inside apply(), used at render time.
+    let localeApi = null
+    let localeBind = null
+    /** Translate through the harness locale; fall back to zh until apply runs. */
+    const t = (key, params) => {
+      if (localeBind !== null) return localeBind(key, params)
+      const text = DICT_ZH[key]
+      return text === undefined ? key : text
+    }
+    /** Re-render tick on locale switches (also catches late dict registrations). */
+    function useLocaleTick() {
+      const [rev, setRev] = React.useState(0)
+      React.useEffect(() => {
+        if (localeApi === null) return undefined
+        return localeApi.subscribe(() => setRev(r => r + 1))
+      }, [])
+      return rev
+    }
+    /** Pick a dictionary for one registered locale id (prefix match; unknown
+     * locales are skipped — the harness fallback chain handles them). */
+    const dictForLocale = (id) => {
+      const base = String(id).split('-')[0].toLowerCase()
+      if (base === 'zh') return DICT_ZH
+      if (base === 'en') return DICT_EN
+      return null
+    }
 
     const STOP_PATH = '/launcher/api/stop'
     const PROBE_INTERVAL_MS = 350
@@ -161,17 +238,17 @@ window.__ModuleLoader__.load({
         lineHeight: '22px',
       })
       const title = document.createElement('div')
-      title.textContent = '服务器已完全退出'
+      title.textContent = t('overlay.title')
       Object.assign(title.style, {
         fontSize: '16px',
         fontWeight: '600',
         lineHeight: '24px',
       })
       const body = document.createElement('div')
-      body.textContent = '会话已实时保存，可双击桌面「DSH Harness」快捷方式重新启动。'
+      body.textContent = t('overlay.body')
       const closeButton = document.createElement('button')
       closeButton.type = 'button'
-      closeButton.textContent = '关闭本窗口'
+      closeButton.textContent = t('overlay.close')
       Object.assign(closeButton.style, {
         height: '38px',
         padding: '0 18px',
@@ -191,8 +268,8 @@ window.__ModuleLoader__.load({
       }
       const hint = document.createElement('div')
       hint.textContent = retrying
-        ? '浏览器拒绝了自动关闭，请直接关闭本窗口或标签页。'
-        : '服务器已退出；本窗口正在尝试自动关闭…'
+        ? t('overlay.hintBlocked')
+        : t('overlay.hintTrying')
       Object.assign(hint.style, {
         fontSize: '12px',
         lineHeight: '18px',
@@ -235,7 +312,7 @@ window.__ModuleLoader__.load({
      * and the dismissal listeners; this only creates content and returns the
      * node plus a label updater for the armed exit item.
      */
-    function buildMenuPopup(trigger, onOpenSettings, onRestartClick, onExitClick, exitArmed, wide) {
+    function buildMenuPopup(trigger, onOpenSettings, onRestartClick, onServerRestartClick, onExitClick, exitArmed, wide) {
       ensureMenuStyles()
       const rect = trigger.getBoundingClientRect()
       const root = document.createElement('div')
@@ -299,31 +376,177 @@ window.__ModuleLoader__.load({
       }
       const settingsItem = mkItem(
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-        '设置',
+        t('menu.settings'),
         onOpenSettings,
       )
-      const restartItem = mkItem(
+      const reloadItem = mkItem(
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
-        '重启/刷新',
+        t('menu.reload'),
         onRestartClick,
+      )
+      const serverRestartItem = mkItem(
+        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
+        t('menu.restartServer'),
+        onServerRestartClick,
       )
       const exitItem = mkItem(
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
-        exitArmed ? '确认完全退出?' : '完全退出',
+        exitArmed ? t('menu.confirmFullExit') : t('menu.fullExit'),
         onExitClick,
       )
       root.appendChild(settingsItem)
-      root.appendChild(restartItem)
+      root.appendChild(reloadItem)
+      root.appendChild(serverRestartItem)
       root.appendChild(exitItem)
       return {
         root,
         setExitArmed: (armed) => {
           const label = exitItem.lastChild
           if (label !== null && label.nodeType === 1) {
-            label.textContent = armed ? '确认完全退出?' : '完全退出'
+            label.textContent = armed ? t('menu.confirmFullExit') : t('menu.fullExit')
           }
         },
       }
+    }
+
+    // ── dsh-dock settings page (a real page in the Settings dialog) ────────
+    //
+    // v0.4.0: all plugin settings live as a proper settings.section entry —
+    // the same seat every other plugin's settings page uses — not a custom
+    // popup. Two toggles persisted via /launcher/api/settings/{get,set}
+    // (host routes behind the same loopback trust fence as the stop route).
+
+    function SettingsToggleRow(props) {
+      useLocaleTick() // re-render the row text on a harness language switch
+      const [value, setValue] = React.useState(props.value)
+      const [error, setError] = React.useState(undefined)
+      React.useEffect(() => { setValue(props.value) }, [props.value])
+      const onChange = (event) => {
+        const next = event.target.checked
+        setValue(next)
+        setError(undefined)
+        Promise.resolve(props.onToggle(next))
+          .then(ok => {
+            if (ok === false) { setValue(!next); setError(t('setting.saveError')) }
+          })
+          .catch(() => { setValue(!next); setError(t('setting.saveError')) })
+      }
+      return React.createElement(
+        'div',
+        {
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            minHeight: 44,
+            padding: '4px 0',
+          },
+        },
+        React.createElement('input', {
+          type: 'checkbox',
+          checked: value,
+          onChange,
+          style: {
+            width: 16,
+            height: 16,
+            flex: 'none',
+            accentColor: 'var(--dsw-alias-fill-accent, currentColor)',
+          },
+        }),
+        React.createElement(
+          'div',
+          { style: { flex: 1, minWidth: 0 } },
+          React.createElement('div', {
+            style: {
+              color: 'var(--dsw-alias-label-primary)',
+              fontSize: 14,
+              lineHeight: '22px',
+            },
+          }, props.title),
+          React.createElement('div', {
+            style: {
+              color: error !== undefined
+                ? 'var(--dsw-alias-label-danger, #e5484d)'
+                : 'var(--dsw-alias-label-secondary)',
+              fontSize: 12,
+              lineHeight: '18px',
+            },
+          }, error !== undefined ? error : props.description),
+        ),
+      )
+    }
+
+    function DockSettingsPage() {
+      const [loaded, setLoaded] = React.useState(false)
+      const [trayStay, setTrayStay] = React.useState(true)
+      const [autostart, setAutostart] = React.useState(false)
+      const [error, setError] = React.useState(undefined)
+      React.useEffect(() => {
+        let cancelled = false
+        fetch('/launcher/api/settings/get', { method: 'POST', cache: 'no-store' })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then(body => {
+            if (cancelled || body === undefined || !body.ok) return
+            setTrayStay(Boolean(body.trayStay))
+            setAutostart(Boolean(body.autostart))
+            setLoaded(true)
+          })
+          .catch(() => { if (!cancelled) setError(t('setting.readError')) })
+        return () => { cancelled = true }
+      }, [])
+      const onToggle = (key) => (on) =>
+        fetch('/launcher/api/settings/set', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ [key]: on }),
+          cache: 'no-store',
+        })
+          .then(r => {
+            if (!r.ok) return false
+            return r.json().then(body => {
+              if (body === undefined || !body.ok) return false
+              setTrayStay(Boolean(body.trayStay))
+              setAutostart(Boolean(body.autostart))
+              return true
+            })
+          })
+      if (error !== undefined) {
+        return React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 13,
+            lineHeight: '20px',
+            padding: '12px 0',
+          },
+        }, error)
+      }
+      if (!loaded) {
+        return React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 13,
+            padding: '12px 0',
+          },
+        }, t('setting.loading'))
+      }
+      return React.createElement(
+        'div',
+        { style: { display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: 520 } },
+        React.createElement(SettingsToggleRow, {
+          key: 'trayStay',
+          value: trayStay,
+          onToggle: onToggle('trayStay'),
+          title: t('setting.trayStay'),
+          description: t('setting.trayStayDesc'),
+        }),
+        React.createElement(SettingsToggleRow, {
+          key: 'autostart',
+          value: autostart,
+          onToggle: onToggle('autostart'),
+          title: t('setting.autostart'),
+          description: t('setting.autostartDesc'),
+        }),
+      )
     }
 
     function MenuCell(props) {
@@ -332,6 +555,7 @@ window.__ModuleLoader__.load({
       const [retrying, setRetrying] = React.useState(false)
       const [menuOpen, setMenuOpen] = React.useState(false)
       const [hovered, setHovered] = React.useState(false)
+      const localeRev = useLocaleTick() // re-render chrome on harness language switch
       const buttonRef = React.useRef(null)
       const dockRef = React.useRef(null) // { parent, next, settingsTrigger, beforeDisplay }
 
@@ -413,7 +637,7 @@ window.__ModuleLoader__.load({
         }
         removeOverlay()
         return undefined
-      }, [phase, retrying])
+      }, [phase, retrying, localeRev])
 
       // Menu lifecycle, state-driven (useDismissOnOutsidePointer pattern):
       // bubble-phase pointerdown outside popup+trigger closes via setState;
@@ -431,11 +655,24 @@ window.__ModuleLoader__.load({
             setMenuOpen(false)
             if (dock !== null) dock.settingsTrigger.click()
           },
-          () => { // 重启: reload the interface — the same effect as the
+          () => { // 刷新: reload the interface — the same effect as the
             // browser's Ctrl+Shift+R hard-reload (page reloads and reconnects;
             // the server process itself keeps running).
             setMenuOpen(false)
             window.location.reload()
+          },
+          () => { // 重启服务器 (v0.4.0): ask the resident tray to run the full
+            // server restart (marker -> kill -> respawn -> auto-open). The
+            // page dies with the server and returns on the fresh boot.
+            setMenuOpen(false)
+            fetch('/launcher/api/restart', { method: 'POST', keepalive: true })
+              .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+              .then(body => {
+                if (body !== undefined && body.ok && body.accepted === false && body.note) {
+                  window.alert(body.note)
+                }
+              })
+              .catch(() => {})
           },
           () => { // 完全退出: two-step arm, then run the exit flow
             if (!armedRef.current) {
@@ -480,7 +717,7 @@ window.__ModuleLoader__.load({
             popup.root.parentNode.removeChild(popup.root)
           }
         }
-      }, [menuOpen, wide])
+      }, [menuOpen, wide, localeRev])
 
       const onTriggerClick = () => {
         if (phase === 'exiting' || phase === 'manual') return
@@ -488,7 +725,7 @@ window.__ModuleLoader__.load({
       }
 
       const active = menuOpen || phase === 'exiting'
-      const title = '更多（设置 / 重启/刷新 / 完全退出）'
+      const title = t('menu.triggerTitle')
       const style = {
         ...STYLE_BUTTON,
         ...(wide ? GEOM_WIDE : GEOM_RAIL),
@@ -526,7 +763,7 @@ window.__ModuleLoader__.load({
         wide
           ? [
             React.createElement(MenuIcon, { size: 16, key: 'icon' }),
-            React.createElement('span', { key: 'label' }, '更多'),
+            React.createElement('span', { key: 'label' }, t('menu.trigger')),
             chevron,
           ]
           : React.createElement(MenuIcon, { size: 18, key: 'icon' }),
@@ -539,14 +776,47 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const slots = ctx.get('slots')
         if (slots === undefined) return
+        // i18n: follow the harness display language. Register the dsh-dock
+        // dictionaries for every catalog locale we ship (zh/en prefixes;
+        // other locales fall through the harness fallback chain), then bind.
+        const locale = ctx.get('locale')
+        const disposers = []
+        if (locale !== undefined) {
+          for (const def of locale.getLocale().locales) {
+            const dict = dictForLocale(def.id)
+            if (dict === null) continue // unknown locale: harness fallback chain covers it
+            try {
+              disposers.push(locale.register('dsh-dock', def.id, dict))
+            } catch { /* duplicate or malformed id: fall back */ }
+          }
+          ctx.effect(() => () => {
+            for (const dispose of disposers) { try { dispose() } catch { /* idempotent */ } }
+            localeBind = null
+            localeApi = null
+          }, 'dsh-dock: locale dictionaries')
+          localeApi = locale
+          localeBind = locale.bind('dsh-dock')
+        }
         slots.inject('sidebar.footer.action', () => slots.register(
           {
             name: 'sidebar.footer.action',
             id: 'launcher-exit',
             order: 90,
-            label: () => '更多菜单（设置 / 完全退出）',
+            label: () => t('menu.footerLabel'),
           },
           (props) => React.createElement(MenuCell, props),
+        ))
+        // v0.4.0: the dsh-dock settings page inside the real Settings
+        // dialog — one settings.section entry, exactly like other plugins'
+        // settings pages (托盘常驻 / 开机自启).
+        slots.inject('settings.section', () => slots.register(
+          {
+            name: 'settings.section',
+            id: 'dsh-dock',
+            order: 90,
+            label: () => t('section.title'),
+          },
+          () => React.createElement(DockSettingsPage),
         ))
       },
     }
