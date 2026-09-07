@@ -1,4 +1,4 @@
-﻿/* dsh-dock client face (hand-written, zero build step).
+/* dsh-dock client face (hand-written, zero build step).
  *
  * Turns the sidebar Settings row into a menu bar: this cell renders a trigger
  * that looks like a shell foot control (☰ 更多 ▴ wide, ☰ circle in the rail)

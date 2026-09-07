@@ -1,4 +1,4 @@
-﻿/**
+/**
  * dsh-dock — one-click desktop launcher for DSH Harness (Windows).
  *
  * Architecture (v2, single native entry):

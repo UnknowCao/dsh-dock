@@ -1,4 +1,4 @@
-﻿// DshDockLauncher.cs — the single dsh-dock desktop launcher executable.
+// DshDockLauncher.cs — the single dsh-dock desktop launcher executable.
 //
 // One native exe replaces the old four-layer chain (.lnk -> wscript ->
 // launch-dsh.vbs -> dsh-card.exe/HTA). Everything lives in this one file:
