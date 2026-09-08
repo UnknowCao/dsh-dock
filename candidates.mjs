@@ -12,10 +12,18 @@
  * batch file (start-server.cmd for the default, start-server.<id>.cmd for
  * alternates) and selection only points the exe at which one to run.
  *
- * Pure node:fs/node:path/node:crypto — no host imports.
+ * v0.6 adaptive discovery — users install dsh under different Node/global
+ * prefixes, so the scan refuses to assume one spot. M1 auto-discovers every
+ * global install the machine exposes: the running node, roaming npm, WinGet
+ * Node versions and nvm-windows version dirs, probing each unique node's
+ * authoritative `npm root -g` (with a dir-next-to-node fallback).
+ *
+ * Pure node:fs/node:path/node:crypto/os plus one bounded child_process spawn
+ * per discovered node (the `npm root -g` probe). No host imports.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -60,6 +68,93 @@ export function globalRoots(nodePath) {
   const roaming = join(homedir(), 'AppData', 'Roaming', 'npm', 'node_modules')
   if (!roots.includes(roaming)) roots.push(roaming)
   return roots
+}
+
+/** Locate the npm CLI bundled beside a node executable (drives `npm root -g`). */
+function npmCliFor(nodePath) {
+  const nodeDir = dirname(nodePath)
+  const candidates = [
+    join(nodeDir, '..', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]
+  for (const c of candidates) if (existsSync(c)) return c
+  return undefined
+}
+
+/**
+ * Resolve a node executable's authoritative global module root via
+ * `npm root -g` (best-effort, bounded). Returns undefined so callers fall
+ * back to the dir-next-to-node heuristic.
+ */
+function npmGlobalRootFor(nodePath) {
+  const cli = npmCliFor(nodePath)
+  if (cli === undefined) return undefined
+  try {
+    const probe = spawnSync(nodePath, [cli, 'root', '-g'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 8000,
+    })
+    const line = (probe.stdout || '').trim()
+    if (probe.status === 0 && line.length > 0 && existsSync(line)) return line
+  } catch { /* spawn unavailable */ }
+  return undefined
+}
+
+/**
+ * M1 · every Node executable this machine exposes that could host a global
+ * dsh: the running node first, then WinGet Node LTS versions and nvm-windows
+ * version dirs (Windows). Deduplicated.
+ */
+function discoveredNodeExecutables(primaryNodePath) {
+  const seen = new Set([primaryNodePath])
+  const nodes = [primaryNodePath]
+  const add = (p) => {
+    const abs = String(p)
+    if (abs.length > 0 && !seen.has(abs)) { seen.add(abs); nodes.push(abs) }
+  }
+  if (process.platform === 'win32') {
+    // WinGet user installs (OpenJS.NodeJS…) — each package has node.exe.
+    try {
+      const winget = join(homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages')
+      if (existsSync(winget)) {
+        for (const entry of readdirSync(winget)) {
+          if (!entry.startsWith('OpenJS.NodeJS')) continue
+          const pkgDir = join(winget, entry)
+          for (const sub of readdirSync(pkgDir)) {
+            const node = join(pkgDir, sub, 'node.exe')
+            if (existsSync(node)) add(node)
+          }
+        }
+      }
+    } catch { /* winget absent */ }
+    // nvm-windows (NVM_HOME, else %APPDATA%\nvm) — each version dir hosts a node.
+    const nvmRoot = process.env.NVM_HOME || join(homedir(), 'AppData', 'Roaming', 'nvm')
+    try {
+      if (existsSync(nvmRoot)) {
+        for (const sub of readdirSync(nvmRoot)) {
+          const node = join(nvmRoot, sub, 'node.exe')
+          if (existsSync(node)) add(node)
+        }
+      }
+    } catch { /* nvm absent */ }
+  }
+  return nodes
+}
+
+/**
+ * M1 · union of global module roots across every discovered node: the plain
+ * globalRoots of the running node, plus each extra node's `npm root -g`
+ * result and its dir-next-to-node heuristic. Deduplicated.
+ */
+export function allGlobalRoots(nodePath) {
+  const roots = new Set(globalRoots(nodePath))
+  for (const node of discoveredNodeExecutables(nodePath)) {
+    const authoritative = npmGlobalRootFor(node)
+    if (authoritative !== undefined) roots.add(authoritative)
+    roots.add(join(dirname(node), 'node_modules'))
+  }
+  return [...roots]
 }
 
 /** Cached @deepseek-ai/dsh copies under every npx cache entry. */
@@ -110,7 +205,8 @@ function pathTail(p) {
  */
 export function scanCandidates({ nodePath, launcherDir, port }) {
   const found = []
-  for (const root of globalRoots(nodePath)) {
+  // M1 · every global module root across the running + discovered nodes.
+  for (const root of allGlobalRoots(nodePath)) {
     const pkg = dshPkg(root)
     if (existsSync(join(pkg, 'package.json'))) {
       const bin = join(pkg, 'lib', 'bin.js')

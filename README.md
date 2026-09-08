@@ -92,6 +92,8 @@ v0.5 起,侧栏底部多一枚三道波浪图标的按钮「**鲸湾**」(Whale 
 
 机器上装了多份 dsh(全局安装 / npx 缓存 / 源码检出)时,冷启动卡片自绘候选清单(版本 · 来源 · 路径),选一个再启动;10 秒不点自动用上次成功的选择(或最高版本);切换只改"跑哪份",零文件重写;一个候选都没有时,提示可一键 npx 拉取。可重录:`pwsh -File scripts/capture-multidsh.ps1`。
 
+**候选发现是自适应的(自 v0.6.0):** 不再假设 dsh 装在哪一处——它会自动扫过本机各常见全局安装位:当前运行 Node、roaming npm、WinGet Node 各版本、nvm-windows 各版本,对每个去重 Node 探测其权威 `npm root -g`(node 旁 `node_modules` 兜底)。这样用不同 Node / 不同全局 prefix 装的 dsh 都能被列为可选,无需写死位置。
+
 ### 实测数字(本机)
 
 > 本机 = Windows 11 + 360 安全软件环境;方法见 [验证与测试](#验证与测试)。换机器后**引擎相关耗时**会变,插件自身耗时 ~0.75s 稳定。
@@ -110,7 +112,7 @@ v0.5 起,侧栏底部多一枚三道波浪图标的按钮「**鲸湾**」(Whale 
 前置条件:Windows 10/11 + DSH `web` profile + Edge(缺失时回落默认浏览器)。无需 Node 配置——安装时自动探测可用 Node(≥ 22.19)。
 
 ```bash
-dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.5.0
+dsh plugin --profile web add github:UnknowCao/dsh-dock#v0.6.0
 ```
 
 重启服务器后**无需任何操作**:插件激活时自动从环境提取参数(自身监听端口、Node 路径、启动命令),~2 秒内桌面出现「DSH Harness.exe」(黑鲸鱼图标)+ 侧栏「鲸湾」菜单。日常两步:**双击鲸鱼开,菜单里退**。「完全退出」走优雅退出(整树 dispose 后自然收尾);仅在没有 `ctx.appExit` 的旧宿主上回退为硬杀。
@@ -214,6 +216,7 @@ dsh-dock/
 ├── candidates.mjs           # 共享:多 DSH 候选探测 + 套件落盘(host 激活与 T2 复核共用)
 ├── dsh-dock-refresh.mjs     # 冷启动前复核脚本(T2,exe 调 node 执行,随插件部署到 launcher 目录)
 ├── dsh-dock-v0.5.0-release-notes.md  # v0.5.0 发布说明(鲸湾改版/共存改造/语言跟随)
+├── dsh-dock-v0.6.0-release-notes.md  # v0.6.0 发布说明(自适应候选发现:跨 Node 自动探测)
 ├── dsh-dock-v0.4.0-release-notes.md  # v0.4.0 发布说明(托盘/重启/自启/设置页的变更叙事)
 ├── src/
 │   └── DshDockLauncher.cs   # 启动器唯一实现:快路径静默开窗 + 冷卡 + 健康闸 + 退出竞态 + 单实例锁 + 托盘
