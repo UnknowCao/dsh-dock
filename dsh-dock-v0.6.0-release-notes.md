@@ -31,13 +31,15 @@
 
 ## 验证(本机实测)
 
-- M1 扫描返回该机器全局 Node 的 dsh(alpha.4)与源码检出(alpha.1),运行正常,
+- 独立冒烟测试 `test/candidates.smoke.mjs`(`node --test test/candidates.smoke.mjs`,全部在 throwaway 临时目录跑,不碰真实 `~/.dsh/launcher`):4 项全过——版本排序、`allGlobalRoots ⊇ globalRoots` 且去重、`scanCandidates` 结构化(well-formed/降序/路径去重)、`materializeSuite` 落盘(candidates.json + 每行一个 batch)。
+- M1 扫描实测返回该机器全局 Node 的 dsh(alpha.4)与源码检出(alpha.1),运行正常,
   含 `npm root -g` 探测路径。
 - 不影响其它候选类型(npx 缓存 / 源码检出)与默认/切换逻辑;冷启动卡片呈现、
   选择、batch 落盘逻辑不变。
 
 ## 文件结构
 
-- `candidates.mjs`(唯一改动的代码文件)
+- `candidates.mjs`(唯一的运行时代码改动)
+- `test/candidates.smoke.mjs`(新增,离线冒烟/单元测试)
 - `package.json` 0.6.0;`README.md` 增自适应扫描说明;新增本发布说明。
 - `assets/dsh-dock-launcher.exe` 与 v0.5.0 完全同一二进制(未重编)。
