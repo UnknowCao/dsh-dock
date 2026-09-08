@@ -213,6 +213,7 @@ dsh-dock/
 ├── regen-launcher.mjs       # 维护:脱离 harness 重新生成启动套件
 ├── candidates.mjs           # 共享:多 DSH 候选探测 + 套件落盘(host 激活与 T2 复核共用)
 ├── dsh-dock-refresh.mjs     # 冷启动前复核脚本(T2,exe 调 node 执行,随插件部署到 launcher 目录)
+├── dsh-dock-v0.5.0-release-notes.md  # v0.5.0 发布说明(鲸湾改版/共存改造/语言跟随)
 ├── dsh-dock-v0.4.0-release-notes.md  # v0.4.0 发布说明(托盘/重启/自启/设置页的变更叙事)
 ├── src/
 │   └── DshDockLauncher.cs   # 启动器唯一实现:快路径静默开窗 + 冷卡 + 健康闸 + 退出竞态 + 单实例锁 + 托盘

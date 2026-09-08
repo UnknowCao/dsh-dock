@@ -215,6 +215,7 @@ dsh-dock/
 ├── regen-launcher.mjs       # maintenance: regenerate the launcher suite outside the harness
 ├── candidates.mjs           # shared: multi-DSH detection + suite materialization (activation + T2 refresh)
 ├── dsh-dock-refresh.mjs     # cold-start refresh script (T2, run by the exe via node; deployed next to candidates.json)
+├── dsh-dock-v0.5.0-release-notes.md  # v0.5.0 release notes (Whale Bay redesign / coexistence / live locale)
 ├── dsh-dock-v0.4.0-release-notes.md  # v0.4.0 release notes (the tray/restart/autostart/settings story)
 ├── src/
 │   └── DshDockLauncher.cs   # the launcher's single implementation: fast-path silent window + cold card + health gate + exit races + single-instance lock + tray
