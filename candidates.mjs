@@ -22,7 +22,7 @@
  * per discovered node (the `npm root -g` probe). No host imports.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -82,37 +82,65 @@ function npmCliFor(nodePath) {
 }
 
 /**
+ * B1 · process-scoped memo of `npm root -g` probes, keyed by the canonical
+ * node path. The npm global prefix does not change mid-process (a boot), so a
+ * result — hit or miss — is safe to reuse for the whole activation, avoiding a
+ * repeated synchronous spawn on consecutive materializeSuite calls.
+ */
+const npmGlobalRootCache = new Map()
+
+/**
  * Resolve a node executable's authoritative global module root via
- * `npm root -g` (best-effort, bounded). Returns undefined so callers fall
- * back to the dir-next-to-node heuristic.
+ * `npm root -g` (best-effort, bounded, memoized). Returns undefined so callers
+ * fall back to the dir-next-to-node heuristic.
  */
 function npmGlobalRootFor(nodePath) {
+  if (npmGlobalRootCache.has(nodePath)) return npmGlobalRootCache.get(nodePath)
+  let result = undefined
   const cli = npmCliFor(nodePath)
-  if (cli === undefined) return undefined
-  try {
-    const probe = spawnSync(nodePath, [cli, 'root', '-g'], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 8000,
-    })
-    const line = (probe.stdout || '').trim()
-    if (probe.status === 0 && line.length > 0 && existsSync(line)) return line
-  } catch { /* spawn unavailable */ }
-  return undefined
+  if (cli !== undefined) {
+    try {
+      const probe = spawnSync(nodePath, [cli, 'root', '-g'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 8000,
+      })
+      // B3 · npm may prefix warnings or emit CRLF; trust only the first
+      // non-empty line as the single root path.
+      const stdout = (probe.stdout || '').split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s.length > 0) || ''
+      if (probe.status === 0 && stdout.length > 0 && existsSync(stdout)) result = stdout
+    } catch { /* spawn unavailable */ }
+  }
+  npmGlobalRootCache.set(nodePath, result)
+  return result
+}
+
+/**
+ * Canonicalize a node executable path (follow Windows junctions/symlinks) so a
+ * path and its symlink alias — e.g. nvm's `current` → a version dir — collapse
+ * to one real entry and are probed once, not twice.
+ */
+function canonicalNode(nodePath) {
+  try { return realpathSync(nodePath) } catch { return nodePath }
 }
 
 /**
  * M1 · every Node executable this machine exposes that could host a global
  * dsh: the running node first, then WinGet Node LTS versions and nvm-windows
- * version dirs (Windows). Deduplicated.
+ * version dirs (Windows). Deduplicated on the real path (symlink-aware).
  */
 function discoveredNodeExecutables(primaryNodePath) {
-  const seen = new Set([primaryNodePath])
-  const nodes = [primaryNodePath]
+  const seen = new Set()
+  const nodes = []
   const add = (p) => {
     const abs = String(p)
-    if (abs.length > 0 && !seen.has(abs)) { seen.add(abs); nodes.push(abs) }
+    if (abs.length === 0) return
+    const real = canonicalNode(abs)
+    if (!seen.has(real)) { seen.add(real); nodes.push(real) }
   }
+  add(primaryNodePath)
   if (process.platform === 'win32') {
     // WinGet user installs (OpenJS.NodeJS…) — each package has node.exe.
     try {
@@ -142,17 +170,22 @@ function discoveredNodeExecutables(primaryNodePath) {
   return nodes
 }
 
+/** Normalize a module-root path: collapse duplicate separators + strip a trailing one. */
+function normalizeRoot(p) {
+  return String(p).replace(/[\\/]{2,}/g, '\\').replace(/[\\/]+$/, '')
+}
+
 /**
  * M1 · union of global module roots across every discovered node: the plain
  * globalRoots of the running node, plus each extra node's `npm root -g`
- * result and its dir-next-to-node heuristic. Deduplicated.
+ * result and its dir-next-to-node heuristic. Deduplicated + normalized.
  */
 export function allGlobalRoots(nodePath) {
-  const roots = new Set(globalRoots(nodePath))
+  const roots = new Set(globalRoots(nodePath).map(normalizeRoot))
   for (const node of discoveredNodeExecutables(nodePath)) {
     const authoritative = npmGlobalRootFor(node)
-    if (authoritative !== undefined) roots.add(authoritative)
-    roots.add(join(dirname(node), 'node_modules'))
+    if (authoritative !== undefined) roots.add(normalizeRoot(authoritative))
+    roots.add(normalizeRoot(join(dirname(node), 'node_modules')))
   }
   return [...roots]
 }
