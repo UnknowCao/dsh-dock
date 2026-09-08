@@ -1,49 +1,53 @@
-/* dsh-dock client face (hand-written, zero build step).
+/* dsh-dock client face v0.5.0 (hand-written, zero build step).
  *
- * Turns the sidebar Settings row into a menu bar: this cell renders a trigger
- * that looks like a shell foot control (☰ 更多 ▴ wide, ☰ circle in the rail)
- * and opens a popup menu with two secondary buttons — 设置 (forwards the click
- * to the real — hidden but fully functional — Settings trigger) and 完全退出
- * (two-step arm, then POST /launcher/api/stop, death-probe, window.close,
- * fallback overlay).
+ * v0.5 — coexistence rewrite. v0.4.0 froze the page when another plugin
+ * (e.g. the Cordis panel badge) inserted an entry into sidebar.footer.action:
+ * MenuCell used to physically relocate its own button DOM into the sidebar
+ * foot container and hide the native Settings trigger with inline styles,
+ * so React's view of that subtree no longer matched the live DOM and any
+ * later reflow of the footer action list deadlocked reconciliation.
  *
- * Docking: the seat is `sidebar.footer.action`; at mount the button relocates
- * into the sidebar foot container (footArea, a flex column under base class
- * rules — the rail alignSelf:center therefore does not depend on collapsed
- * state cascades) and the real Settings trigger is hidden via recorded inline
- * styles. Layout-effect cleanup restores both. Missing seat degrades to a
- * plain footer-action cell.
+ * v0.5 rules, agreed with upstream:
+ *   1. The native Settings row is untouched. dsh-dock registers as a plain
+ *      `sidebar.footer.action` neighbor entry and renders exactly where the
+ *      slot mounts it — no DOM relocation, no hidden triggers, ever.
+ *   2. The menu shrinks to pure dock actions: Reload / Restart server /
+ *      Full exit. (Settings lives where it always did.)
+ *   3. The popup and the exit overlay are React portals (react-dom is a
+ *      kernel-provided module): React owns their lifecycle end to end.
+ *   4. Button geometry follows the slot's owner props (wide/rail) instead
+ *      of hand-crafted trigger mimickry.
  *
- * Dismissal mirrors ui-primitives useDismissOnOutsidePointer: bubble-phase
- * document pointerdown outside the popup/trigger sets menuOpen false, and the
- * popup's DOM lifecycle is owned by the React effect — no manual DOM removal,
- * so state never desyncs.
- *
- * Chrome mirrors the Settings trigger (`.trigger` / `.trigger.rail`): same
- * width/height/radius/padding, hover fill, ink and font; the popup mirrors
- * the cordis panel surface tokens. All colors ride `--dsw-*`.
+ * The plugin's own settings page (tray residency / autostart) keeps its
+ * official `settings.section` registration; the host half (tray, launcher
+ * routes) is unchanged.
  *
  * Loader format matches the modules node half: a __ModuleLoader__ bundle whose
- * factory receives `require` for kernel-provided modules (react only here).
+ * factory receives `require` for kernel-provided modules.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-dock',
   factory: (require) => {
     const React = require('react')
+    const ReactDOM = require('react-dom')
 
     // ── i18n: the plugin's own chrome follows the harness display language ──
     // Strings live in a `dsh-dock` locale namespace registered through the
     // host's `locale` service (bind/register/subscribe). Components translate
     // at render time and re-render on a locale switch via the revision tick.
+    // 「鲸湾」叙事：菜单是鲸鱼的休整湾，三个动作全部取自鲸类行为谱——
+    // 换气（刷新页面）、洄游（重启服务器，去而必归）、归湾（完全退出休息）。
     const DICT_ZH = {
-      'menu.trigger': '更多',
-      'menu.triggerTitle': '更多（设置 / 刷新 / 重启服务器 / 完全退出）',
-      'menu.footerLabel': '更多菜单（设置 / 完全退出）',
-      'menu.settings': '设置',
-      'menu.reload': '刷新',
-      'menu.restartServer': '重启服务器',
-      'menu.fullExit': '完全退出',
-      'menu.confirmFullExit': '确认完全退出?',
+      'menu.trigger': '鲸湾',
+      'menu.triggerTitle': '鲸湾 —— 换气（刷新界面）· 洄游（重启服务器）· 归湾（完全退出）',
+      'menu.footerLabel': '鲸湾菜单（换气 / 洄游 / 归湾）',
+      'menu.reload': '换气',
+      'menu.reloadHint': '重载界面，服务器不动',
+      'menu.restartServer': '洄游',
+      'menu.restartHint': '重启服务器，就绪后自动开窗',
+      'menu.fullExit': '归湾',
+      'menu.fullExitHint': '停止服务器并关闭窗口',
+      'menu.confirmFullExit': '确认归湾?',
       'section.title': 'DSH Dock（启动器）',
       'setting.trayStay': '托盘常驻',
       'setting.trayStayDesc': '双击桌面鲸鱼开窗后，鲸鱼驻留系统托盘：悬停显示服务器状态，左键秒开；关窗不停服。关闭则恢复开窗即退的短命行为。',
@@ -59,19 +63,21 @@ window.__ModuleLoader__.load({
       'overlay.hintBlocked': '浏览器拒绝了自动关闭，请直接关闭本窗口或标签页。',
     }
     const DICT_EN = {
-      'menu.trigger': 'More',
-      'menu.triggerTitle': 'More (Settings / Reload / Restart server / Full exit)',
-      'menu.footerLabel': 'More menu (Settings / Full exit)',
-      'menu.settings': 'Settings',
-      'menu.reload': 'Reload',
-      'menu.restartServer': 'Restart server',
-      'menu.fullExit': 'Full exit',
-      'menu.confirmFullExit': 'Confirm full exit?',
+      'menu.trigger': 'Whale Bay',
+      'menu.triggerTitle': 'Whale Bay — Surface (reload the page) · Migrate (restart the server) · To the Bay (full exit)',
+      'menu.footerLabel': 'Whale Bay menu (Surface / Migrate / To the Bay)',
+      'menu.reload': 'Surface',
+      'menu.reloadHint': 'Reload the page; the server keeps running',
+      'menu.restartServer': 'Migrate',
+      'menu.restartHint': 'Restart the server; reopens when ready',
+      'menu.fullExit': 'To the Bay',
+      'menu.fullExitHint': 'Stop the server and close the window',
+      'menu.confirmFullExit': 'Confirm: to the bay?',
       'section.title': 'DSH Dock (launcher)',
       'setting.trayStay': 'Tray residency',
       'setting.trayStayDesc': 'After the desktop whale opens a window, it stays in the notification area: hover shows the server state, left-click reopens instantly, closing the window never stops the server. Turn it off to restore the short-lived launcher behavior.',
       'setting.autostart': 'Start DSH on login',
-      'setting.autostartDesc': 'After you sign in to Windows the whale sits in the tray and preheats the server in the background (no window); one click opens instantly. Written to the per-user Run key; can be turned off anytime.',
+      'setting.autostartDesc': 'After you sign in to Windows the whale sits in the tray and preheats the server in the background (no window); one click opens instantly. Written to the per-user Run key, can be turned off anytime.',
       'setting.loading': 'Loading settings…',
       'setting.readError': 'Failed to read settings (plugin routes unavailable)',
       'setting.saveError': 'Save failed — reverted',
@@ -79,7 +85,7 @@ window.__ModuleLoader__.load({
       'overlay.body': 'Sessions were saved in real time. Double-click the desktop "DSH Harness" shortcut to start again.',
       'overlay.close': 'Close this window',
       'overlay.hintTrying': 'The server exited; this window is trying to close itself…',
-      'overlay.hintBlocked': 'The browser blocked the auto-close — please close this window or tab manually.',
+      'overlay.hintBlocked': 'The browser blocked the auto-close; please close this window or tab manually.',
     }
     // Locale-service handle + binding; set inside apply(), used at render time.
     let localeApi = null
@@ -116,185 +122,40 @@ window.__ModuleLoader__.load({
     const CLOSE_GRACE_MS = 450
     const PROBE_CAP = 40 // ~14s of probing before giving up
 
-    // Wide geometry: the settings trigger's own full-row chrome.
-    const GEOM_WIDE = {
-      width: 'calc(100% + 4px)',
-      height: 42,
-      margin: '4px -2px',
-      borderRadius: 12,
-      padding: '0 10px 0 8px',
-      gap: 8,
-    }
-    // Rail geometry: the 36x36 circle box; alignSelf centers it in the flex
-    // foot column regardless of collapsed-state class cascades.
-    const GEOM_RAIL = {
-      width: 36,
-      height: 36,
-      margin: '8px 0 10px',
-      justifyContent: 'center',
-      gap: 0,
-      padding: 0,
-      borderRadius: '50%',
-      alignSelf: 'center',
-    }
+    // ── shared stylesheet (one inert <style> tag, id-guarded) ───────────────
 
-    const STYLE_BUTTON = {
-      flex: 'none',
-      display: 'flex',
-      alignItems: 'center',
-      boxSizing: 'border-box',
-      border: 'none',
-      background: 'transparent',
-      cursor: 'pointer',
-      overflow: 'hidden',
-      color: 'var(--dsw-alias-label-primary)',
-      fontFamily: 'inherit',
-      fontSize: 14,
-      lineHeight: '22px',
-      whiteSpace: 'nowrap',
-    }
+    let stylesInjected = false
 
-    /** Feather "power" outline glyph, stroke-matched to the settings icons. */
-    function PowerIcon({ size }) {
-      return React.createElement(
-        'svg',
-        {
-          width: size,
-          height: size,
-          viewBox: '0 0 24 24',
-          fill: 'none',
-          stroke: 'currentColor',
-          strokeWidth: 2,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-          'aria-hidden': true,
-        },
-        React.createElement('path', { d: 'M18.36 6.64a9 9 0 1 1-12.73 0' }),
-        React.createElement('line', { x1: '12', y1: '2', x2: '12', y2: '12' }),
-      )
-    }
-
-    /** Feather "menu" (hamburger) glyph — the industry-standard menu mark. */
-    function MenuIcon({ size }) {
-      return React.createElement(
-        'svg',
-        {
-          width: size,
-          height: size,
-          viewBox: '0 0 24 24',
-          fill: 'none',
-          stroke: 'currentColor',
-          strokeWidth: 2,
-          strokeLinecap: 'round',
-          strokeLinejoin: 'round',
-          'aria-hidden': true,
-        },
-        React.createElement('line', { x1: '3', y1: '6', x2: '21', y2: '6' }),
-        React.createElement('line', { x1: '3', y1: '12', x2: '21', y2: '12' }),
-        React.createElement('line', { x1: '3', y1: '18', x2: '21', y2: '18' }),
-      )
-    }
-
-    // ── shutdown overlay (imperative DOM: fixed layer on document.body) ─────
-
-    let overlayNode = null
-
-    function removeOverlay() {
-      if (overlayNode !== null && overlayNode.parentNode !== null) {
-        overlayNode.parentNode.removeChild(overlayNode)
-      }
-      overlayNode = null
-    }
-
-    /** Full-viewport "server exited" notice with a close retry button. */
-    function showExitedOverlay(retrying, setRetrying) {
-      removeOverlay()
-      const root = document.createElement('div')
-      Object.assign(root.style, {
-        position: 'fixed',
-        inset: '0',
-        zIndex: '2000',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'var(--dsw-alias-bg-mask-1)',
-        backdropFilter: 'var(--dsw-mask-blur)',
-        fontFamily: 'var(--ds-font-family-ui, inherit)',
-      })
-      const card = document.createElement('div')
-      Object.assign(card.style, {
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: '12px',
-        maxWidth: '360px',
-        padding: '24px 28px',
-        borderRadius: '16px',
-        background: 'var(--dsw-alias-bg-layer-2)',
-        boxShadow: 'var(--dsw-shadow-lv3)',
-        color: 'var(--dsw-alias-label-primary)',
-        textAlign: 'center',
-        fontSize: '14px',
-        lineHeight: '22px',
-      })
-      const title = document.createElement('div')
-      title.textContent = t('overlay.title')
-      Object.assign(title.style, {
-        fontSize: '16px',
-        fontWeight: '600',
-        lineHeight: '24px',
-      })
-      const body = document.createElement('div')
-      body.textContent = t('overlay.body')
-      const closeButton = document.createElement('button')
-      closeButton.type = 'button'
-      closeButton.textContent = t('overlay.close')
-      Object.assign(closeButton.style, {
-        height: '38px',
-        padding: '0 18px',
-        border: 'none',
-        borderRadius: '12px',
-        background: 'var(--dsw-alias-button-elevated-fill)',
-        color: 'var(--dsw-alias-label-primary)',
-        fontSize: '14px',
-        cursor: 'pointer',
-        marginTop: '6px',
-      })
-      closeButton.onclick = () => {
-        window.close()
-        window.setTimeout(() => {
-          if (!window.closed) setRetrying(true)
-        }, 400)
-      }
-      const hint = document.createElement('div')
-      hint.textContent = retrying
-        ? t('overlay.hintBlocked')
-        : t('overlay.hintTrying')
-      Object.assign(hint.style, {
-        fontSize: '12px',
-        lineHeight: '18px',
-        color: 'var(--dsw-alias-label-secondary)',
-      })
-      card.appendChild(title)
-      card.appendChild(body)
-      card.appendChild(closeButton)
-      card.appendChild(hint)
-      root.appendChild(card)
-      document.body.appendChild(root)
-      overlayNode = root
-    }
-
-    // ── menu popup (imperative DOM owned by the React effect) ───────────────
-
-    let menuStylesInjected = false
-
-    /** One shared stylesheet for the popup entrance animation. */
-    function ensureMenuStyles() {
-      if (menuStylesInjected || document.head === null) return
-      menuStylesInjected = true
+    /**
+     * Styles for the dock. Two parts:
+     *
+     * 1. Slot stacking — the shell lays `sidebar.footer.action` entries out
+     *    in a single horizontal flex row, but full-row entries like the
+     *    Cordis panel badge (width:100%) leave no room for any neighbor, so
+     *    a second entry is pushed out of the sidebar and becomes invisible.
+     *    Stacking the slot anchor vertically (pure CSS over the structural
+     *    [data-slot] attribute — no DOM is moved or restyled inline, React's
+     *    view of the tree is untouched) lets every footer-action entry take
+     *    its own row and coexist.
+     * 2. Popup items and the entrance animation.
+     */
+    /**
+     * Inject the shared stylesheet once. Returns the tag (or null when the
+     * head is unavailable) so the caller's effect can remove it on dispose.
+     */
+    function ensureStyles() {
+      if (stylesInjected || document.head === null) return null
+      stylesInjected = true
       const style = document.createElement('style')
-      style.id = 'dsh-dock-menu-styles'
+      style.id = 'dsh-dock-styles'
       style.textContent = [
+        '[data-slot="sidebar.footer.action"]{',
+        '  display: flex !important; /* override the inline display:contents */',
+        '  flex-direction: column;',
+        '  width: 100%;',
+        '  align-items: stretch;',
+        '  min-width: 0;',
+        '}',
         '@keyframes dsh-dock-menu-pop {',
         '  from { opacity: 0; transform: translateY(40px); }',
         '  to { opacity: 1; transform: none; }',
@@ -303,118 +164,248 @@ window.__ModuleLoader__.load({
         // mild ease-out-back: a small overshoot for a hint of elasticity.
         '  animation: dsh-dock-menu-pop 300ms cubic-bezier(0.34, 1.22, 0.64, 1);',
         '}',
+        '.dsh-dock-menu-item {',
+        '  display: flex; align-items: center; gap: 8px;',
+        '  height: 40px; padding: 0 12px; border-radius: 10px;',
+        '  color: var(--dsw-alias-label-primary);',
+        '  font-size: 14px; line-height: 22px;',
+        '  cursor: pointer; white-space: nowrap;',
+        '}',
+        '.dsh-dock-menu-item:hover, .dsh-dock-menu-item:focus-visible {',
+        '  background: var(--dsw-alias-interactive-bg-hover);',
+        '  outline: none;',
+        '}',
+        '.dsh-dock-menu-item.dsh-dock-menu-item--armed {',
+        '  color: var(--dsw-alias-label-danger, #e5484d);',
+        '}',
+        '.dsh-dock-menu-icon { display: inline-flex; flex: none; }',
       ].join('\n')
       document.head.appendChild(style)
+      return style
     }
 
     /**
-     * Build the popup panel above the trigger. The caller owns append/remove
-     * and the dismissal listeners; this only creates content and returns the
-     * node plus a label updater for the armed exit item.
+     * The 鲸湾 trigger mark: three rows of waves (Lucide "waves" geometry,
+     * Feather-compatible strokes) — the bay itself, opening the scene where
+     * the whale surfaces (wind), migrates (refresh-cw), and sleeps (moon).
      */
-    function buildMenuPopup(trigger, onOpenSettings, onRestartClick, onServerRestartClick, onExitClick, exitArmed, wide) {
-      ensureMenuStyles()
-      const rect = trigger.getBoundingClientRect()
-      const root = document.createElement('div')
-      root.setAttribute('role', 'menu')
-      root.classList.add('dsh-dock-menu-pop')
-      // Wide: match the trigger row's live width so the popup reads as the
-      // same column. Rail trigger is a 36px circle — fall back to 216px.
-      const width = wide ? Math.max(180, Math.round(rect.width)) : 216
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))
-      Object.assign(root.style, {
-        position: 'fixed',
-        left: `${Math.round(left)}px`,
-        bottom: `${Math.round(window.innerHeight - rect.top + 6)}px`,
-        zIndex: '1500',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '2px',
-        width: `${width}px`,
-        boxSizing: 'border-box',
-        padding: '6px',
-        border: '1px solid var(--dsw-alias-border-inverted)',
-        borderRadius: '12px',
-        background: 'var(--dsw-specific-menu)',
-        boxShadow: 'var(--dsw-shadow-lv3)',
-      })
-      const mkItem = (iconSvg, text, onclick) => {
-        const item = document.createElement('div')
-        item.setAttribute('role', 'menuitem')
-        item.tabIndex = 0
-        Object.assign(item.style, {
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          height: '40px',
-          padding: '0 12px',
-          borderRadius: '10px',
-          color: 'var(--dsw-alias-label-primary)',
-          fontSize: '14px',
-          lineHeight: '22px',
-          cursor: 'pointer',
-          whiteSpace: 'nowrap',
-        })
-        const icon = document.createElement('span')
-        icon.style.display = 'inline-flex'
-        icon.innerHTML = iconSvg
-        item.appendChild(icon.firstChild)
-        const label = document.createElement('span')
-        label.textContent = text
-        label.style.flex = '1'
-        item.appendChild(label)
-        item.onmouseenter = () => { item.style.background = 'var(--dsw-alias-interactive-bg-hover)' }
-        item.onmouseleave = () => { item.style.background = 'transparent' }
-        item.onclick = onclick
-        item.onkeydown = (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            onclick()
+    function BayIcon({ size }) {
+      return React.createElement(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 2,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': true,
+        },
+        React.createElement('path', { d: 'M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1' }),
+        React.createElement('path', { d: 'M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1' }),
+        React.createElement('path', { d: 'M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1' }),
+      )
+    }
+
+    // Inline item glyphs — the marks compose one seascape: wind = 换气 (the
+    // breath itself), refresh-cw = 洄游 (the migratory round trip), moon =
+    // 归湾 (moor & sleep in the bay).
+    const feather = (inner) => '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + '</svg>'
+    // 换气: Feather "wind" — the breath itself, three streams of air.
+    const ICON_RELOAD = feather('<path d="M9.59 4.59A2 2 0 1 1 11 8H2m10.59 11.41A2 2 0 1 0 14 16H2m15.73-8.27A2.5 2.5 0 1 1 19.5 12H2"/>')
+    const ICON_RESTART = feather('<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>')
+    const ICON_EXIT = feather('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')
+
+    // ── menu popup (React portal; React owns the whole lifecycle) ───────────
+
+    /**
+     * The popup panel above the trigger. Anchored to the live trigger rect at
+     * open time; dismissed by Escape or an outside pointerdown. The exit item
+     * arms for 4s (two-step confirm) before it fires.
+     */
+    function MenuPortal({ anchor, wide, onClose, onReload, onRestartServer, onExit }) {
+      const [armed, setArmed] = React.useState(false)
+      React.useEffect(() => {
+        const onPointerDown = (event) => {
+          if (event.target instanceof Node
+            && !(event.target instanceof Element && event.target.closest('.dsh-dock-menu') !== null)
+            && !anchor.contains(event.target)) {
+            onClose()
           }
         }
-        return item
-      }
-      const settingsItem = mkItem(
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-        t('menu.settings'),
-        onOpenSettings,
-      )
-      const reloadItem = mkItem(
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
-        t('menu.reload'),
-        onRestartClick,
-      )
-      const serverRestartItem = mkItem(
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>',
-        t('menu.restartServer'),
-        onServerRestartClick,
-      )
-      const exitItem = mkItem(
-        '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>',
-        exitArmed ? t('menu.confirmFullExit') : t('menu.fullExit'),
-        onExitClick,
-      )
-      root.appendChild(settingsItem)
-      root.appendChild(reloadItem)
-      root.appendChild(serverRestartItem)
-      root.appendChild(exitItem)
-      return {
-        root,
-        setExitArmed: (armed) => {
-          const label = exitItem.lastChild
-          if (label !== null && label.nodeType === 1) {
-            label.textContent = armed ? t('menu.confirmFullExit') : t('menu.fullExit')
-          }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') onClose()
+        }
+        document.addEventListener('pointerdown', onPointerDown)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('pointerdown', onPointerDown)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [anchor, onClose])
+      // Two-step arm: disarm automatically after 4s of inaction.
+      React.useEffect(() => {
+        if (!armed) return undefined
+        const id = window.setTimeout(() => setArmed(false), 4000)
+        return () => window.clearTimeout(id)
+      }, [armed])
+
+      const rect = anchor.getBoundingClientRect()
+      // Wide: match the trigger's live width so the popup reads as the same
+      // column. Rail trigger is compact — fall back to 216px.
+      const width = wide ? Math.max(180, Math.round(rect.width)) : 216
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))
+
+      const item = (iconHtml, text, hint, onclick, danger, key) => React.createElement(
+        'div',
+        {
+          key,
+          role: 'menuitem',
+          tabIndex: 0,
+          // The metaphor stays pure in the menu; the native title tooltip
+          // carries the functional legend on hover, at zero visual cost.
+          title: hint,
+          'aria-label': text + ' — ' + hint,
+          className: 'dsh-dock-menu-item' + (danger ? ' dsh-dock-menu-item--armed' : ''),
+          onClick: onclick,
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onclick()
+            }
+          },
         },
-      }
+        React.createElement('span', {
+          className: 'dsh-dock-menu-icon',
+          dangerouslySetInnerHTML: { __html: iconHtml },
+        }),
+        React.createElement('span', { style: { flex: 1 } }, text),
+      )
+
+      return ReactDOM.createPortal(
+        React.createElement(
+          'div',
+          {
+            className: 'dsh-dock-menu dsh-dock-menu-pop',
+            role: 'menu',
+            style: {
+              position: 'fixed',
+              left: `${Math.round(left)}px`,
+              bottom: `${Math.round(window.innerHeight - rect.top + 6)}px`,
+              zIndex: 1500,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              width: `${width}px`,
+              boxSizing: 'border-box',
+              padding: 6,
+              border: '1px solid var(--dsw-alias-border-inverted)',
+              borderRadius: 12,
+              background: 'var(--dsw-specific-menu)',
+              boxShadow: 'var(--dsw-shadow-lv3)',
+            },
+          },
+          item(ICON_RELOAD, t('menu.reload'), t('menu.reloadHint'), () => { onClose(); onReload() }, false, 'reload'),
+          item(ICON_RESTART, t('menu.restartServer'), t('menu.restartHint'), () => { onClose(); onRestartServer() }, false, 'restart'),
+          item(
+            ICON_EXIT,
+            armed ? t('menu.confirmFullExit') : t('menu.fullExit'),
+            t('menu.fullExitHint'),
+            () => { if (armed) { onClose(); onExit() } else setArmed(true) },
+            armed,
+            'exit',
+          ),
+        ),
+        document.body,
+      )
+    }
+
+    // ── exit overlay (React portal) ─────────────────────────────────────────
+
+    /** Full-viewport "server exited" notice with a close retry button. */
+    function ExitOverlayPortal({ retrying, onRetry }) {
+      useLocaleTick() // re-render the overlay text on a harness language switch
+      const overlay = React.createElement(
+        'div',
+        {
+          style: {
+            position: 'fixed',
+            inset: 0,
+            zIndex: 2000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'var(--dsw-alias-bg-mask-1)',
+            backdropFilter: 'var(--dsw-mask-blur)',
+            fontFamily: 'var(--ds-font-family-ui, inherit)',
+          },
+        },
+        React.createElement(
+          'div',
+          {
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 12,
+              maxWidth: 360,
+              padding: '24px 28px',
+              borderRadius: 16,
+              background: 'var(--dsw-alias-bg-layer-2)',
+              boxShadow: 'var(--dsw-shadow-lv3)',
+              color: 'var(--dsw-alias-label-primary)',
+              textAlign: 'center',
+              fontSize: 14,
+              lineHeight: '22px',
+            },
+          },
+          React.createElement('div', {
+            style: { fontSize: 16, fontWeight: 600, lineHeight: '24px' },
+          }, t('overlay.title')),
+          React.createElement('div', null, t('overlay.body')),
+          React.createElement(
+            'button',
+            {
+              type: 'button',
+              style: {
+                height: 38,
+                padding: '0 18px',
+                border: 'none',
+                borderRadius: 12,
+                background: 'var(--dsw-alias-button-elevated-fill)',
+                color: 'var(--dsw-alias-label-primary)',
+                fontSize: 14,
+                cursor: 'pointer',
+                marginTop: 6,
+              },
+              onClick: onRetry,
+            },
+            t('overlay.close'),
+          ),
+          React.createElement(
+            'div',
+            {
+              style: {
+                fontSize: 12,
+                lineHeight: '18px',
+                color: 'var(--dsw-alias-label-secondary)',
+              },
+            },
+            retrying ? t('overlay.hintBlocked') : t('overlay.hintTrying'),
+          ),
+        ),
+      )
+      return ReactDOM.createPortal(overlay, document.body)
     }
 
     // ── dsh-dock settings page (a real page in the Settings dialog) ────────
     //
-    // v0.4.0: all plugin settings live as a proper settings.section entry —
-    // the same seat every other plugin's settings page uses — not a custom
-    // popup. Two toggles persisted via /launcher/api/settings/{get,set}
-    // (host routes behind the same loopback trust fence as the stop route).
+    // The plugin settings live as a proper settings.section entry — the same
+    // seat every other plugin's settings page uses. Two toggles persisted via
+    // /launcher/api/settings/{get,set} (host routes behind the same loopback
+    // trust fence as the stop route).
 
     function SettingsToggleRow(props) {
       useLocaleTick() // re-render the row text on a harness language switch
@@ -437,7 +428,7 @@ window.__ModuleLoader__.load({
           style: {
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
+            gap: 12,
             minHeight: 44,
             padding: '4px 0',
           },
@@ -531,7 +522,7 @@ window.__ModuleLoader__.load({
       }
       return React.createElement(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: '8px', maxWidth: 520 } },
+        { style: { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 520 } },
         React.createElement(SettingsToggleRow, {
           key: 'trayStay',
           value: trayStay,
@@ -549,51 +540,21 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── the trigger cell (renders exactly where the slot mounts it) ─────────
+
     function MenuCell(props) {
       const wide = Boolean(props.wide)
       const [phase, setPhase] = React.useState('idle') // idle | exiting | manual
-      const [retrying, setRetrying] = React.useState(false)
       const [menuOpen, setMenuOpen] = React.useState(false)
       const [hovered, setHovered] = React.useState(false)
+      const [retrying, setRetrying] = React.useState(false)
       const localeRev = useLocaleTick() // re-render chrome on harness language switch
       const buttonRef = React.useRef(null)
-      const dockRef = React.useRef(null) // { parent, next, settingsTrigger, beforeDisplay }
 
-      // Dock into the foot container and hide the real trigger (restored on
-      // unmount). footArea is a flex column under base class rules, so the
-      // rail alignSelf:center is guaranteed without collapsed-state cascades.
-      React.useLayoutEffect(() => {
-        const button = buttonRef.current
-        if (button === null || dockRef.current !== null) return
-        const seat = document.querySelector('[data-slot="sidebar.settings"]')
-        if (seat === null) return // no settings seat: stay a footer-action cell
-        const settingsArea = seat.parentElement
-        const footArea = settingsArea !== null ? settingsArea.parentElement : null
-        const settingsTrigger = seat.querySelector('button')
-        if (footArea === null || settingsTrigger === null) return
-        dockRef.current = {
-          parent: button.parentNode,
-          next: button.nextSibling,
-          settingsTrigger,
-          beforeDisplay: settingsTrigger.style.display,
-        }
-        settingsTrigger.style.display = 'none'
-        footArea.appendChild(button)
-        return () => {
-          const dock = dockRef.current
-          if (dock === null) return
-          dock.settingsTrigger.style.display = dock.beforeDisplay
-          try {
-            dock.parent.insertBefore(button, dock.next)
-          } catch { /* node already detached */ }
-          dockRef.current = null
-        }
-      }, [])
-
-      // While exiting: let the "正在退出…" state linger imperceptibly
-      // (~CLOSE_GRACE_MS, before the server dies and the app can paint a
-      // disconnect flash), then close the window. If the browser blocks the
-      // close, fall back to probing the server's death and retrying.
+      // While exiting: linger imperceptibly (~CLOSE_GRACE_MS, before the
+      // server dies and the app can paint a disconnect flash), then close the
+      // window. If the browser blocks the close, fall back to probing the
+      // server's death and retrying; the overlay follows the manual phase.
       React.useEffect(() => {
         if (phase !== 'exiting') return
         const grace = window.setTimeout(() => {
@@ -629,95 +590,27 @@ window.__ModuleLoader__.load({
         }
       }, [phase])
 
-      // The exit overlay follows the manual phase (auto-close already tried).
-      React.useEffect(() => {
-        if (phase === 'manual') {
-          showExitedOverlay(retrying, setRetrying)
-          return removeOverlay
-        }
-        removeOverlay()
-        return undefined
-      }, [phase, retrying, localeRev])
-
-      // Menu lifecycle, state-driven (useDismissOnOutsidePointer pattern):
-      // bubble-phase pointerdown outside popup+trigger closes via setState;
-      // the effect alone appends/removes the popup DOM.
-      React.useEffect(() => {
-        if (!menuOpen) return undefined
-        const trigger = buttonRef.current
-        if (trigger === null) return undefined
-        const dock = dockRef.current
-        const armedRef = { current: false }
-        const disarmTimer = { id: undefined }
-        const popup = buildMenuPopup(
-          trigger,
-          () => { // 设置: forward to the real (hidden) settings trigger
-            setMenuOpen(false)
-            if (dock !== null) dock.settingsTrigger.click()
-          },
-          () => { // 刷新: reload the interface — the same effect as the
-            // browser's Ctrl+Shift+R hard-reload (page reloads and reconnects;
-            // the server process itself keeps running).
-            setMenuOpen(false)
-            window.location.reload()
-          },
-          () => { // 重启服务器 (v0.4.0): ask the resident tray to run the full
-            // server restart (marker -> kill -> respawn -> auto-open). The
-            // page dies with the server and returns on the fresh boot.
-            setMenuOpen(false)
-            fetch('/launcher/api/restart', { method: 'POST', keepalive: true })
-              .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-              .then(body => {
-                if (body !== undefined && body.ok && body.accepted === false && body.note) {
-                  window.alert(body.note)
-                }
-              })
-              .catch(() => {})
-          },
-          () => { // 完全退出: two-step arm, then run the exit flow
-            if (!armedRef.current) {
-              armedRef.current = true
-              popup.setExitArmed(true)
-              disarmTimer.id = window.setTimeout(() => {
-                armedRef.current = false
-                popup.setExitArmed(false)
-              }, 4000)
-              return
+      const restartServer = () => {
+        // Ask the resident tray to run the full server restart
+        // (marker -> kill -> respawn -> auto-open). The page dies with the
+        // server and returns on the fresh boot.
+        fetch('/launcher/api/restart', { method: 'POST', keepalive: true })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then(body => {
+            if (body !== undefined && body.ok && body.accepted === false && body.note) {
+              window.alert(body.note)
             }
-            window.clearTimeout(disarmTimer.id)
-            setMenuOpen(false)
-            setPhase('exiting')
-            // keepalive lets the request survive the page unload. The actual
-            // close happens after a short imperceptible grace (see the exiting
-            // effect): linger on "正在退出…", then close just before the
-            // server dies (~600ms later) so no disconnect flash can paint.
-            fetch(STOP_PATH, { method: 'POST', keepalive: true }).catch(() => {})
-          },
-          false,
-          wide,
-        )
-        document.body.appendChild(popup.root)
-        const onPointerDown = (event) => {
-          if (event.target instanceof Node
-            && !popup.root.contains(event.target)
-            && !trigger.contains(event.target)) {
-            setMenuOpen(false)
-          }
-        }
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') setMenuOpen(false)
-        }
-        document.addEventListener('pointerdown', onPointerDown)
-        document.addEventListener('keydown', onKeyDown)
-        return () => {
-          window.clearTimeout(disarmTimer.id)
-          document.removeEventListener('pointerdown', onPointerDown)
-          document.removeEventListener('keydown', onKeyDown)
-          if (popup.root.parentNode !== null) {
-            popup.root.parentNode.removeChild(popup.root)
-          }
-        }
-      }, [menuOpen, wide, localeRev])
+          })
+          .catch(() => {})
+      }
+
+      const fullExit = () => {
+        setPhase('exiting')
+        // keepalive lets the request survive the page unload. The actual
+        // close happens after a short imperceptible grace (see the exiting
+        // effect) so no disconnect flash can paint.
+        fetch(STOP_PATH, { method: 'POST', keepalive: true }).catch(() => {})
+      }
 
       const onTriggerClick = () => {
         if (phase === 'exiting' || phase === 'manual') return
@@ -726,76 +619,116 @@ window.__ModuleLoader__.load({
 
       const active = menuOpen || phase === 'exiting'
       const title = t('menu.triggerTitle')
-      const style = {
-        ...STYLE_BUTTON,
-        ...(wide ? GEOM_WIDE : GEOM_RAIL),
-        background: hovered || active
-          ? 'var(--dsw-alias-interactive-bg-hover)'
-          : 'transparent',
-      }
-      // Up-pointing chevron: the popup opens upward from this trigger.
-      const chevron = React.createElement(
-        'span',
-        {
-          key: 'chevron',
-          style: {
-            marginLeft: 'auto',
-            fontSize: 20,
-            lineHeight: 1,
-            color: 'var(--dsw-alias-label-tertiary)',
-          },
-        },
-        '▴',
-      )
-      return React.createElement(
+      // 「鲸湾」— the whale's rest-and-reset bay. Chrome mirrors the shell's
+      // Settings trigger exactly (`.trigger` / `.trigger.rail`): same
+      // width/height/radius/padding, hover fill, ink and font, so the two
+      // rows read as one family. Rail keeps the 36px circle form.
+      const button = React.createElement(
         'button',
         {
+          key: 'trigger',
           ref: buttonRef,
           onClick: onTriggerClick,
           title,
           type: 'button',
           'aria-haspopup': 'menu',
+          'aria-label': title,
           'aria-expanded': menuOpen ? 'true' : undefined,
-          style,
+          style: {
+            flex: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: wide ? 'flex-start' : 'center',
+            gap: wide ? 8 : 0,
+            boxSizing: 'border-box',
+            width: wide ? 'calc(100% + 4px)' : 36,
+            height: wide ? 42 : 36,
+            margin: wide ? '4px -2px' : '4px 0 2px',
+            padding: wide ? '0 10px 0 8px' : 0,
+            border: 'none',
+            borderRadius: wide ? 12 : '50%',
+            background: hovered || active
+              ? 'var(--dsw-alias-interactive-bg-hover)'
+              : 'transparent',
+            cursor: 'pointer',
+            overflow: 'hidden',
+            color: 'var(--dsw-alias-label-primary)',
+            fontFamily: 'inherit',
+            fontSize: 14,
+            lineHeight: '22px',
+            whiteSpace: 'nowrap',
+          },
           onPointerEnter: () => setHovered(true),
           onPointerLeave: () => setHovered(false),
         },
-        wide
-          ? [
-            React.createElement(MenuIcon, { size: 16, key: 'icon' }),
-            React.createElement('span', { key: 'label' }, t('menu.trigger')),
-            chevron,
-          ]
-          : React.createElement(MenuIcon, { size: 18, key: 'icon' }),
+        React.createElement(BayIcon, { size: wide ? 16 : 18, key: 'icon' }),
+        wide && React.createElement('span', { key: 'label' }, t('menu.trigger')),
+      )
+
+      return React.createElement(
+        React.Fragment,
+        null,
+        button,
+        menuOpen && buttonRef.current !== null && React.createElement(MenuPortal, {
+          key: 'menu-' + localeRev,
+          anchor: buttonRef.current,
+          wide,
+          onClose: () => setMenuOpen(false),
+          onReload: () => window.location.reload(),
+          onRestartServer: restartServer,
+          onExit: fullExit,
+        }),
+        phase === 'manual' && React.createElement(ExitOverlayPortal, {
+          key: 'exit-overlay',
+          retrying,
+          onRetry: () => {
+            // Re-arm the hint per attempt so a later failure is visible as a
+            // fresh "blocked" transition, not a permanently stuck one.
+            setRetrying(false)
+            window.close()
+            window.setTimeout(() => {
+              if (!window.closed) setRetrying(true)
+            }, 400)
+          },
+        }),
       )
     }
 
     return {
       name: 'dsh-dock',
-      inject: ['slots'],
+      // 'locale' is a hard dependency, not an optional get: dictionaries must
+      // register before first render, so Cordis waits for the locale service
+      // instead of silently falling back to the built-in zh strings (which
+      // made the UI ignore harness language switches in <= v0.4).
+      inject: ['slots', 'locale'],
       apply(ctx) {
-        const slots = ctx.get('slots')
-        if (slots === undefined) return
-        // i18n: follow the harness display language. Register the dsh-dock
-        // dictionaries for every catalog locale we ship (zh/en prefixes;
-        // other locales fall through the harness fallback chain), then bind.
-        const locale = ctx.get('locale')
+        const slots = ctx.slots
+        const locale = ctx.locale
         const disposers = []
-        if (locale !== undefined) {
-          for (const def of locale.getLocale().locales) {
-            const dict = dictForLocale(def.id)
-            if (dict === null) continue // unknown locale: harness fallback chain covers it
-            try {
-              disposers.push(locale.register('dsh-dock', def.id, dict))
-            } catch { /* duplicate or malformed id: fall back */ }
-          }
+        for (const def of locale.getLocale().locales) {
+          const dict = dictForLocale(def.id)
+          if (dict === null) continue // unknown locale: harness fallback chain covers it
+          try {
+            disposers.push(locale.register('dsh-dock', def.id, dict))
+          } catch { /* duplicate or malformed id: fall back */ }
+        }
+        ctx.effect(() => () => {
+          for (const dispose of disposers) { try { dispose() } catch { /* idempotent */ } }
+          localeBind = null
+          localeApi = null
+        }, 'dsh-dock: locale dictionaries')
+        localeApi = locale
+        localeBind = locale.bind('dsh-dock')
+        // The dock menu as a plain footer-action neighbor. No DOM relocation,
+        // no hidden native triggers — the slot owns where this renders.
+        // ensureStyles stacks the slot vertically so neighbors coexist; own
+        // the <style> tag for the fiber so a dispose removes it.
+        let stylesTag = ensureStyles()
+        if (stylesTag !== null) {
           ctx.effect(() => () => {
-            for (const dispose of disposers) { try { dispose() } catch { /* idempotent */ } }
-            localeBind = null
-            localeApi = null
-          }, 'dsh-dock: locale dictionaries')
-          localeApi = locale
-          localeBind = locale.bind('dsh-dock')
+            if (stylesTag !== null && stylesTag.parentNode !== null) stylesTag.parentNode.removeChild(stylesTag)
+            stylesInjected = false
+          }, 'dsh-dock: styles')
         }
         slots.inject('sidebar.footer.action', () => slots.register(
           {
@@ -806,9 +739,9 @@ window.__ModuleLoader__.load({
           },
           (props) => React.createElement(MenuCell, props),
         ))
-        // v0.4.0: the dsh-dock settings page inside the real Settings
-        // dialog — one settings.section entry, exactly like other plugins'
-        // settings pages (托盘常驻 / 开机自启).
+        // The dsh-dock settings page inside the real Settings dialog — one
+        // settings.section entry, exactly like other plugins' settings pages
+        // (托盘常驻 / 开机自启).
         slots.inject('settings.section', () => slots.register(
           {
             name: 'settings.section',

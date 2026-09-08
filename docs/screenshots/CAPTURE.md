@@ -1,6 +1,6 @@
 # 素材重录说明(Showcase 可复现)
 
-README 效果区的四张图全部来自**真实运行产物**,不摆拍。任何人想重新录制,按下面步骤即可。产物与录制方法一起入库,改完 UI 后随时可重录。
+README 效果区的图片全部来自**真实运行产物**,不摆拍。任何人想重新录制,按下面步骤即可。产物与录制方法一起入库,改完 UI 后随时可重录。
 
 ## 1. 冷启动卡片(cold-card.png)— 脚本一键重录
 
@@ -33,14 +33,23 @@ $b.Save('docs\screenshots\desktop-shortcut.png',[System.Drawing.Imaging.ImageFor
 
 (ico 目录偏移:第 6 字节起第一个条目,size 在条目 8–11 字节、offset 在 12–15 字节。)
 
-## 3. 侧栏「更多」菜单(menu.png 与 menu-exit-armed.png)— 人工截图
+## 3. 侧栏「鲸湾」菜单(menu.png / menu-en.png / menu-exit-armed.png)— 脚本一键重录
 
-菜单在浏览器里,无法脚本抓取,需手动。两步:
+v0.5 起菜单截图脚本化(v0.4 时代的人工 Win+Shift+S 已退役)。脚本用一次性 headless Edge 沿 CDP 驱动**真实 DSH 页面**,点开真菜单、按弹层+触发器联合矩形裁剪,零手抖、完全可复现:
 
-1. 点侧栏底部「☰ 更多」→ 菜单弹出(现为**四项**:设置 / 重启/刷新 / 重启服务器 / 完全退出)→ **Win+Shift+S** 区域截图,框住菜单(尽量含底部触发按钮)→ 存为 `docs/screenshots/menu.png`;
-2. 再点一次「**完全退出**」(只点第一下!)→ 按钮变「确认完全退出?」→ 截第二张 `docs/screenshots/menu-exit-armed.png` → 按 **Esc** 关闭。
+```powershell
+node scripts/capture-whale-menu.mjs        # 中文两图:menu.png + menu-exit-armed.png
+node scripts/capture-whale-menu.mjs --en   # 追加英文图 menu-en.png(截完自动切回中文)
+```
 
-> ⚠️ 第二步千万别点第二下,那会真的退出当前 DSH 服务器。
+脚本做的:
+
+- 从 `~\.dsh\launcher\dsh-server.log` 读 token URL——**只在进程内流转**,不打印、不落盘——用临时一次性 Edge 配置(完事即删,不动你的 Edge)打开真实 GUI;
+- 等侧栏「鲸湾」触发器出现 → 点击弹出菜单 → 验证菜单项(换气 / 洄游 / 归湾)→ 裁剪存 `menu.png`;
+- 「归湾」只点**第一下**(两步确认的武装态,确认归湾?)截 `menu-exit-armed.png`,**绝不点第二下**——不会真的退出服务器;
+- `--en` 走真实设置弹窗切换界面语言(通用设置 → 语言 → English),等鲸湾菜单重渲染为 Surface / Migrate / To the Bay 后截 `menu-en.png`,**finally 强制切回中文**(语言是服务端用户偏好,不还原会留在英文)。
+
+前置:DSH 服务器正由 dsh-dock 启动运行(启动日志里有 token URL);Edge 已安装;Node ≥ 22。
 
 ## 3b. 托盘右键菜单(tray-menu.png)— 人工截图
 
@@ -50,13 +59,21 @@ $b.Save('docs\screenshots\desktop-shortcut.png',[System.Drawing.Imaging.ImageFor
 2. **右键**鲸鱼 → 菜单弹出(四项:打开 DSH / 重启服务器 / ☑开机自启 / 完全退出)→ **Win+Shift+S** 框住菜单截图 → 存为 `docs/screenshots/tray-menu.png`;
 3. (可选)把鼠标悬停在鲸鱼上不点,tooltip 出现「DSH 运行中 · 端口 3080」→ 截 `tray-tooltip.png`。
 
-## 3c. 系统设置弹窗的「DSH Dock(启动器)」页(settings-section.png)— 人工截图
+## 3c. 系统设置弹窗的「DSH Dock(启动器)」页(settings-section.png)— 脚本一键重录
 
-1. 侧栏 ☰「更多」→「设置」打开系统设置弹窗;
-2. 左侧分区列表点「DSH Dock(启动器)」→ 右侧显示两个开关(托盘常驻 / 开机自启,带说明);
-3. **Win+Shift+S** 框住该分区截图 → 存为 `docs/screenshots/settings-section.png`。
+```powershell
+node scripts/capture-whale-menu.mjs --settings
+```
 
-## 4. 回归验证(不产图,产 PASS)
+脚本打开真实设置弹窗 → 点左侧「DSH Dock(启动器)」分区 → 等托盘常驻 / 开机自启两开关渲染 → 截整个弹窗。无干扰、不最小化任何窗口。
+
+## 4. 多 DSH 候选选择(cold-card-multidsh.png)— 脚本一键重录
+
+```powershell
+pwsh -NoProfile -File scripts/capture-multidsh.ps1
+```
+
+## 5. 回归验证(不产图,产 PASS)
 
 ```powershell
 pwsh -NoProfile -File scripts/verify-health-gate.ps1
@@ -67,7 +84,7 @@ pwsh -NoProfile -File scripts/verify-health-gate.ps1
 
 ## 复现纪律
 
-- 截图必须来自当前版本的 `client.js` / `DshDockLauncher.cs`,改过 UI 就重录,不要复用旧图(如侧栏菜单改为四项后,menu.png 已重录);
-- 冷卡用脚本、菜单/托盘/设置页用人工,来源如实标注在 README 图注里;
-- `~\.dsh\launcher\dsh-server.log` 含有真实 token,**绝不可放入 README 或素材目录**;
+- 截图必须来自当前版本的 `client.js` / `DshDockLauncher.cs`,改过 UI 就重录,不要复用旧图(鲸湾菜单三项化后,menu*.png 已全部脚本重录);
+- 冷卡、鲸湾菜单与设置页用脚本、托盘用人工,来源如实标注在 README 图注里;
+- `~\.dsh\launcher\dsh-server.log` 含有真实 token,**绝不可放入 README 或素材目录**(capture-whale-menu.mjs 在进程内读取、永不落盘);
 - 演示配置的 ini 在脚本结束后自动恢复,不要手动改 `launcher.ini`。
