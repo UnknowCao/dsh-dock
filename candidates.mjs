@@ -18,13 +18,17 @@
  * Node versions and nvm-windows version dirs, probing each unique node's
  * authoritative `npm root -g` (with a dir-next-to-node fallback).
  *
+ * v0.7 adds M2 — a user-maintainable extra-root list (extra-roots.json in the
+ * launcher dir, edited from the settings page): an install in any arbitrary
+ * folder is found by pointing the scan at it, never by relocating the install.
+ *
  * Pure node:fs/node:path/node:crypto/os plus one bounded child_process spawn
  * per discovered node (the `npm root -g` probe). No host imports.
  */
 
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
@@ -190,6 +194,80 @@ export function allGlobalRoots(nodePath) {
   return [...roots]
 }
 
+// ── M2 · user-pointed extra install roots (v0.7) ────────────────────────────
+//
+// No auto-scan can know an install a user put in an arbitrary folder. M2 adds
+// a small, user-maintainable list (extra-roots.json in the launcher dir,
+// edited from the settings page) whose entries are treated as extra module
+// roots. Reading/parsing lives HERE (single source of truth for both the
+// scan and the settings routes); no relocation is ever required.
+
+/** File (inside the launcher dir) holding the user's extra install paths. */
+export const EXTRA_ROOTS_FILE = 'extra-roots.json'
+
+/**
+ * M2 · read the user's extra install paths from extra-roots.json in the
+ * launcher dir. Accepts either a bare JSON array of path strings or an object
+ * `{ "roots": string[] }`. Missing/malformed file → empty list; a UTF-8 BOM
+ * (PowerShell/editors) is tolerated.
+ */
+export function readExtraRoots(launcherDir) {
+  const raw = []
+  try {
+    const text = readFileSync(join(launcherDir, EXTRA_ROOTS_FILE), 'utf8')
+      .replace(/^\uFEFF/, '')
+    const parsed = JSON.parse(text)
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.roots) ? parsed.roots : [])
+    for (const item of arr) {
+      if (typeof item === 'string' && item.trim().length > 0) raw.push(item.trim())
+    }
+  } catch { /* absent or malformed → nothing extra */ }
+  return raw
+}
+
+function isDshPackageDir(p) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(p, 'package.json'), 'utf8'))
+    return pkg.name === '@deepseek-ai/dsh'
+  } catch { return false }
+}
+
+/**
+ * M2 · normalize ONE user-supplied path into the module root (the dir whose
+ * child `@deepseek-ai/dsh` lives in), or null when nothing resolves. Tolerant
+ * of several granularities: a `node_modules` root, an `<any>/node_modules`,
+ * the `@deepseek-ai` scope dir, or the `@deepseek-ai/dsh` package dir itself.
+ * Exported so the settings host route can validate an entry before persisting.
+ */
+export function moduleRootForUserPath(entry) {
+  if (typeof entry !== 'string' || entry.trim().length === 0) return null
+  const abs = resolve(entry)
+  if (existsSync(dshPkg(abs))) return normalizeRoot(abs) // …/node_modules (holds dsh)
+  if (existsSync(dshPkg(join(abs, 'node_modules')))) return normalizeRoot(join(abs, 'node_modules'))
+  if (existsSync(join(abs, 'dsh', 'package.json')) && isDshPackageDir(join(abs, 'dsh'))) {
+    return normalizeRoot(dirname(abs)) // …/@deepseek-ai scope dir
+  }
+  if (existsSync(join(abs, 'package.json')) && isDshPackageDir(abs)) return normalizeRoot(dirname(dirname(abs)))
+  return null
+}
+
+/**
+ * M2 · module roots from every stored entry that actually resolves to a dsh
+ * package. Raw entries (including currently-unresolved ones) ride along so the
+ * settings page can round-trip and flag them without losing them.
+ */
+function extraRootModuleDirs(launcherDir) {
+  const raw = readExtraRoots(launcherDir)
+  const roots = []
+  for (const entry of raw) {
+    const root = moduleRootForUserPath(entry)
+    if (root !== null && !roots.includes(root)) roots.push(root)
+  }
+  return { raw, roots }
+}
+
 /** Cached @deepseek-ai/dsh copies under every npx cache entry. */
 export function npxCacheDirs() {
   const local = process.env.LOCALAPPDATA
@@ -240,6 +318,14 @@ export function scanCandidates({ nodePath, launcherDir, port }) {
   const found = []
   // M1 · every global module root across the running + discovered nodes.
   for (const root of allGlobalRoots(nodePath)) {
+    const pkg = dshPkg(root)
+    if (existsSync(join(pkg, 'package.json'))) {
+      const bin = join(pkg, 'lib', 'bin.js')
+      found.push({ kind: 'global', pkg, bin, recipe: { args: [bin, 'web', '--no-open'], cwd: launcherDir } })
+    }
+  }
+  // M2 · module roots the user pointed to from the settings page.
+  for (const root of extraRootModuleDirs(launcherDir).roots) {
     const pkg = dshPkg(root)
     if (existsSync(join(pkg, 'package.json'))) {
       const bin = join(pkg, 'lib', 'bin.js')

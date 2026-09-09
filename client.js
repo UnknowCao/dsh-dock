@@ -56,6 +56,16 @@ window.__ModuleLoader__.load({
       'setting.loading': '正在读取设置…',
       'setting.readError': '设置读取失败（插件路由不可用）',
       'setting.saveError': '保存失败，已还原',
+      'setting.extraRoots': '额外 DSH 安装路径',
+      'setting.extraRootsDesc': '自动扫描覆盖常见全局安装位（当前 Node、roaming npm、WinGet、nvm）。若你的 DSH 装在其它自定义目录，在此添加该目录即可被发现（填 node_modules 根或 @deepseek-ai\\dsh 包目录皆可），无需搬移安装。保存后立即刷新候选。',
+      'setting.extraRootsAdd': '添加',
+      'setting.extraRootsPlaceholder': '例如 D:\\tools\\dsh\\node_modules',
+      'setting.extraRootsEmpty': '尚未添加额外路径',
+      'setting.extraRootsUnresolved': '此目录当前未解析到 DSH（已保存，装上后自动生效）',
+      'setting.extraRootsRemove': '移除',
+      'setting.extraRootsSaveOk': '已保存并已刷新候选',
+      'setting.extraRootsSaveFail': '保存失败，请重试',
+      'setting.extraRootsRefreshFail': '已保存，但候选刷新未完成',
       'overlay.title': '服务器已完全退出',
       'overlay.body': '会话已实时保存，可双击桌面「DSH Harness」快捷方式重新启动。',
       'overlay.close': '关闭本窗口',
@@ -81,6 +91,16 @@ window.__ModuleLoader__.load({
       'setting.loading': 'Loading settings…',
       'setting.readError': 'Failed to read settings (plugin routes unavailable)',
       'setting.saveError': 'Save failed — reverted',
+      'setting.extraRoots': 'Extra DSH install paths',
+      'setting.extraRootsDesc': 'Auto-scan covers the common global locations (current Node, roaming npm, WinGet, nvm). If your DSH lives in another custom folder, add it here so it is discovered — no need to relocate the install. A `node_modules` root or the `@deepseek-ai\\dsh` package dir both work. Saving refreshes the candidate list immediately.',
+      'setting.extraRootsAdd': 'Add',
+      'setting.extraRootsPlaceholder': 'e.g. D:\\tools\\dsh\\node_modules',
+      'setting.extraRootsEmpty': 'No extra paths added yet',
+      'setting.extraRootsUnresolved': 'No DSH resolved at this path (saved; it takes effect once installed)',
+      'setting.extraRootsRemove': 'Remove',
+      'setting.extraRootsSaveOk': 'Saved and candidates refreshed',
+      'setting.extraRootsSaveFail': 'Save failed, please retry',
+      'setting.extraRootsRefreshFail': 'Saved, but the candidate refresh did not complete',
       'overlay.title': 'Server has fully exited',
       'overlay.body': 'Sessions were saved in real time. Double-click the desktop "DSH Harness" shortcut to start again.',
       'overlay.close': 'Close this window',
@@ -467,6 +487,220 @@ window.__ModuleLoader__.load({
       )
     }
 
+    // ── v0.7 · extra install paths (M2 adaptive scan) editor ────────────────
+    //
+    // A real page control in the dsh-dock settings page: loads the stored
+    // list, lets the user add/remove arbitrary paths by hand, and on every
+    // change persists via /launcher/api/extra-roots/set (the host writes
+    // extra-roots.json and silently re-runs the candidate scan) so the launcher
+    // picker reflects it immediately. Unresolved entries are flagged but kept —
+    // an install pointed at later still becomes a candidate on the next scan.
+
+    const EXTRA_ROOTS_GET = '/launcher/api/extra-roots/get'
+    const EXTRA_ROOTS_SET = '/launcher/api/extra-roots/set'
+
+    function ExtraRootsEditor() {
+      const [loaded, setLoaded] = React.useState(false)
+      const [roots, setRoots] = React.useState([])      // [{ path, matched }]
+      const [draft, setDraft] = React.useState('')
+      const [busy, setBusy] = React.useState(false)
+      const [note, setNote] = React.useState(undefined) // { kind: 'ok'|'warn'|'err', text }
+      React.useEffect(() => {
+        let cancelled = false
+        fetch(EXTRA_ROOTS_GET, { method: 'POST', cache: 'no-store' })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then(body => {
+            if (cancelled || body === undefined || !body.ok) return
+            const arr = Array.isArray(body.roots) ? body.roots : []
+            const matched = Array.isArray(body.matched) ? body.matched : arr.map(() => false)
+            setRoots(arr.map((p, i) => ({ path: String(p), matched: Boolean(matched[i]) })))
+            setLoaded(true)
+          })
+          .catch(() => { if (!cancelled) setNote({ kind: 'err', text: t('setting.readError') }) })
+        return () => { cancelled = true }
+      }, [])
+      const save = (next) => {
+        setBusy(true)
+        setNote(undefined)
+        const paths = next.map((x) => x.path)
+        return fetch(EXTRA_ROOTS_SET, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ roots: paths }),
+          cache: 'no-store',
+        })
+          .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+          .then(body => {
+            if (body === undefined || !body.ok) {
+              setNote({ kind: 'err', text: t('setting.extraRootsSaveFail') })
+              return false
+            }
+            const matched = Array.isArray(body.matched) ? body.matched : paths.map(() => false)
+            setRoots(paths.map((p, i) => ({ path: String(p), matched: Boolean(matched[i]) })))
+            setNote({
+              kind: body.refreshed ? 'ok' : 'warn',
+              text: body.refreshed ? t('setting.extraRootsSaveOk') : t('setting.extraRootsRefreshFail'),
+            })
+            return true
+          })
+          .catch(() => { setNote({ kind: 'err', text: t('setting.extraRootsSaveFail') }); return false })
+          .finally(() => setBusy(false))
+      }
+      const onAdd = () => {
+        const p = draft.trim()
+        if (p.length === 0 || busy) return
+        save([...roots, { path: p, matched: false }])
+        setDraft('')
+      }
+      const onRemove = (index) => {
+        if (busy) return
+        save(roots.filter((_, i) => i !== index))
+      }
+      const inputRow = React.createElement(
+        'div',
+        { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+        React.createElement('input', {
+          type: 'text',
+          value: draft,
+          onChange: (e) => setDraft(e.target.value),
+          onKeyDown: (e) => { if (e.key === 'Enter') onAdd() },
+          placeholder: t('setting.extraRootsPlaceholder'),
+          spellCheck: false,
+          style: {
+            flex: 1,
+            minWidth: 0,
+            boxSizing: 'border-box',
+            height: 34,
+            padding: '0 10px',
+            border: '1px solid var(--dsw-alias-border-inverted)',
+            borderRadius: 8,
+            background: 'var(--dsw-alias-bg-layer-2)',
+            color: 'var(--dsw-alias-label-primary)',
+            fontFamily: 'inherit',
+            fontSize: 13,
+          },
+        }),
+        React.createElement(
+          'button',
+          {
+            type: 'button',
+            onClick: onAdd,
+            disabled: busy || draft.trim().length === 0,
+            style: {
+              flex: 'none',
+              height: 34,
+              padding: '0 14px',
+              border: 'none',
+              borderRadius: 8,
+              background: 'var(--dsw-alias-button-elevated-fill)',
+              color: 'var(--dsw-alias-label-primary)',
+              fontSize: 13,
+              cursor: 'pointer',
+            },
+          },
+          t('setting.extraRootsAdd'),
+        ),
+      )
+      const rows = roots.length === 0
+        ? [React.createElement('div', {
+          key: 'empty',
+          style: {
+            color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 12,
+            lineHeight: '18px',
+            padding: '4px 0',
+          },
+        }, t('setting.extraRootsEmpty'))]
+        : roots.map((row, i) => React.createElement(
+          'div',
+          { key: i, style: { display: 'flex', alignItems: 'center', gap: 8 } },
+          React.createElement(
+            'div',
+            {
+              title: row.matched ? row.path : `${row.path} — ${t('setting.extraRootsUnresolved')}`,
+              style: {
+                flex: 1,
+                minWidth: 0,
+                boxSizing: 'border-box',
+                padding: '6px 10px',
+                borderRadius: 8,
+                background: 'var(--dsw-alias-bg-layer-2)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                color: row.matched
+                  ? 'var(--dsw-alias-label-primary)'
+                  : 'var(--dsw-alias-label-warning, #d4a72c)',
+                fontFamily: 'monospace',
+                fontSize: 12,
+              },
+            },
+            row.path,
+          ),
+          React.createElement(
+            'button',
+            {
+              type: 'button',
+              onClick: () => onRemove(i),
+              disabled: busy,
+              title: t('setting.extraRootsRemove'),
+              style: {
+                flex: 'none',
+                height: 28,
+                padding: '0 10px',
+                border: 'none',
+                borderRadius: 7,
+                background: 'transparent',
+                color: 'var(--dsw-alias-label-secondary)',
+                fontSize: 12,
+                cursor: 'pointer',
+              },
+            },
+            '✕',
+          ),
+        ))
+      return React.createElement(
+        'div',
+        { style: { marginTop: 4 } },
+        React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-primary)',
+            fontSize: 14,
+            lineHeight: '22px',
+          },
+        }, t('setting.extraRoots')),
+        React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 12,
+            lineHeight: '18px',
+            marginBottom: 8,
+          },
+        }, t('setting.extraRootsDesc')),
+        inputRow,
+        React.createElement('div', {
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            marginTop: 10,
+          },
+        }, ...rows),
+        note !== undefined && React.createElement('div', {
+          style: {
+            marginTop: 8,
+            fontSize: 12,
+            lineHeight: '18px',
+            color: note.kind === 'err'
+              ? 'var(--dsw-alias-label-danger, #e5484d)'
+              : note.kind === 'warn'
+                ? 'var(--dsw-alias-label-warning, #d4a72c)'
+                : 'var(--dsw-alias-label-primary)',
+          },
+        }, note.text),
+      )
+    }
+
     function DockSettingsPage() {
       const [loaded, setLoaded] = React.useState(false)
       const [trayStay, setTrayStay] = React.useState(true)
@@ -537,6 +771,11 @@ window.__ModuleLoader__.load({
           title: t('setting.autostart'),
           description: t('setting.autostartDesc'),
         }),
+        React.createElement('div', {
+          key: 'extraRootsDivider',
+          style: { height: 1, background: 'var(--dsw-alias-border-inverted)', margin: '8px 0 2px' },
+        }),
+        React.createElement(ExtraRootsEditor, { key: 'extraRootsEditor' }),
       )
     }
 

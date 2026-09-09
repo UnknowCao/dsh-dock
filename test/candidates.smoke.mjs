@@ -1,6 +1,7 @@
 /**
  * candidates.smoke.mjs — offline smoke/unit tests for the dsh-dock candidate
- * scanner (candidates.mjs), including the v0.6 adaptive (M1) discovery.
+ * scanner (candidates.mjs), including the v0.6 adaptive (M1) discovery and the
+ * v0.7 user-pointed extra roots (M2).
  *
  * Run:   node --test test/candidates.smoke.mjs
  *        (or:  node --test  — Node >= 18 with node:test; Node 24 ships it)
@@ -9,22 +10,37 @@
  * real ~/.dsh/launcher. The scan exercises whatever real Node/global roots this
  * machine exposes, but assertions are structural (well-formed, sorted, deduped,
  * files written) — they do NOT depend on a particular dsh being installed, so
- * the suite is green on an arbitrary dev box, not only the author's.
+ * the suite is green on an arbitrary dev box, not only the author's. Where an
+ * M2 test needs a "real" install it fabricates a minimal fake
+ * `node_modules/@deepseek-ai/dsh` inside the temp dir.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import {
   compareVersion,
   globalRoots,
   allGlobalRoots,
   scanCandidates,
   materializeSuite,
+  readExtraRoots,
+  moduleRootForUserPath,
+  EXTRA_ROOTS_FILE,
 } from '../candidates.mjs'
 
 const NODE = process.execPath
+
+/** Fabricate a minimal installable dsh package: <dir>/node_modules/@deepseek-ai/dsh. */
+function makeFakeDsh(dir, version) {
+  const pkgDir = join(dir, 'node_modules', '@deepseek-ai', 'dsh')
+  mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+  writeFileSync(join(pkgDir, 'package.json'),
+    JSON.stringify({ name: '@deepseek-ai/dsh', version }, null, 2))
+  writeFileSync(join(pkgDir, 'lib', 'bin.js'), 'export {}\n')
+  return pkgDir
+}
 
 test('compareVersion orders releases above prereleases and by core number', () => {
   assert.equal(compareVersion('0.6.0', '0.6.0'), 0)
@@ -100,6 +116,75 @@ test('materializeSuite writes candidates.json + one batch per row (throwaway dir
       assert.equal(match.path, c.path)
       assert.equal(match.batch, c.batch)
     }
+  } finally {
+    rmSync(launcherDir, { recursive: true, force: true })
+  }
+})
+
+// ── M2 · user-pointed extra roots (v0.7) ───────────────────────────────────
+
+test('M2 readExtraRoots accepts array + {roots} forms and tolerates a BOM', () => {
+  const launcherDir = mkdtempSync(join(tmpdir(), 'dsh-dock-m2read-'))
+  try {
+    // bare array
+    writeFileSync(join(launcherDir, EXTRA_ROOTS_FILE),
+      JSON.stringify(['C:\\one', 'C:\\two']), 'utf8')
+    assert.deepEqual(readExtraRoots(launcherDir), ['C:\\one', 'C:\\two'])
+    // object form with a UTF-8 BOM prefix (PowerShell-style) + blank entries
+    writeFileSync(join(launcherDir, EXTRA_ROOTS_FILE),
+      `\uFEFF${JSON.stringify({ roots: ['C:\\one', '  ', 'C:\\three'] })}`, 'utf8')
+    assert.deepEqual(readExtraRoots(launcherDir), ['C:\\one', 'C:\\three'])
+    // malformed JSON → empty, never throws
+    writeFileSync(join(launcherDir, EXTRA_ROOTS_FILE), '{ nope', 'utf8')
+    assert.deepEqual(readExtraRoots(launcherDir), [])
+    // absent file → empty
+    rmSync(join(launcherDir, EXTRA_ROOTS_FILE))
+    assert.deepEqual(readExtraRoots(launcherDir), [])
+  } finally {
+    rmSync(launcherDir, { recursive: true, force: true })
+  }
+})
+
+test('M2 moduleRootForUserPath normalizes every entry granularity', () => {
+  const launcherDir = mkdtempSync(join(tmpdir(), 'dsh-dock-m2norm-'))
+  try {
+    // fabricate: installRoot/node_modules/@deepseek-ai/dsh @ 9.9.9-test
+    const installRoot = join(launcherDir, 'install')
+    makeFakeDsh(installRoot, '9.9.9-test')
+    const nmRoot = join(installRoot, 'node_modules')
+    const scopeDir = join(nmRoot, '@deepseek-ai')
+    const pkgDir = join(scopeDir, 'dsh')
+
+    // node_modules root given directly
+    assert.equal(moduleRootForUserPath(nmRoot), nmRoot)
+    // install root (contains node_modules)
+    assert.equal(moduleRootForUserPath(installRoot), nmRoot)
+    // the @deepseek-ai scope dir
+    assert.equal(moduleRootForUserPath(scopeDir), nmRoot)
+    // the @deepseek-ai/dsh package dir itself
+    assert.equal(moduleRootForUserPath(pkgDir), nmRoot)
+    // a nonexistent path → null
+    assert.equal(moduleRootForUserPath(join(launcherDir, 'nope')), null)
+    assert.equal(moduleRootForUserPath(''), null)
+  } finally {
+    rmSync(launcherDir, { recursive: true, force: true })
+  }
+})
+
+test('M2 scanCandidates includes a dsh pointed at by extra-roots.json', () => {
+  const launcherDir = mkdtempSync(join(tmpdir(), 'dsh-dock-m2scan-'))
+  try {
+    const fakeVersion = '9.9.9-test'
+    const fakePkg = makeFakeDsh(launcherDir, fakeVersion) // launcherDir/node_modules/…dsh
+    // point the scan at the fake install root
+    writeFileSync(join(launcherDir, EXTRA_ROOTS_FILE),
+      JSON.stringify({ roots: [launcherDir] }), 'utf8')
+
+    const { rows } = scanCandidates({ nodePath: NODE, launcherDir, port: 3080 })
+    const row = rows.find((r) => r.path === fakePkg)
+    assert.ok(row, 'extra-rooted fake dsh must appear as a candidate')
+    assert.equal(row.version, fakeVersion)
+    assert.equal(row.kind, 'global') // extra roots surface as global installs
   } finally {
     rmSync(launcherDir, { recursive: true, force: true })
   }
