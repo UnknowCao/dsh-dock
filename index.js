@@ -22,7 +22,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, read
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { materializeSuite } from './candidates.mjs'
+import { materializeSuite, readExtraRoots, moduleRootForUserPath, EXTRA_ROOTS_FILE } from './candidates.mjs'
 
 export const name = 'dsh-dock'
 export const inject = ['tools']
@@ -42,6 +42,8 @@ const MANIFEST_FILE = join(LAUNCHER_DIR, 'launcher.json') // { host, port, deskt
  * the HKCU Run registry key (its presence IS the state), trayStay lives here.
  */
 const SETTINGS_FILE = join(LAUNCHER_DIR, 'settings.json')
+/** v0.7 · user-supplied extra dsh install paths (M2 adaptive scan). */
+const EXTRA_ROOTS_PATH = join(LAUNCHER_DIR, EXTRA_ROOTS_FILE)
 /**
  * Restart-request file (v0.4.0): the sidebar 重启服务器 menu item writes this;
  * the resident tray polls for it and performs its battle-tested RestartServer
@@ -697,6 +699,39 @@ function writeSettings(settings) {
   writeIfChanged(SETTINGS_FILE, `${JSON.stringify(settings, null, 2)}\n`)
 }
 
+// ── v0.7 extra-root (M2 adaptive scan) persistence ─────────────────────────
+
+/** Read the raw user extra-root list ({ roots: string[] }) from disk. */
+function readExtraRootsFile() {
+  return { roots: readExtraRoots(LAUNCHER_DIR) }
+}
+
+/** Persist the raw extra-root list; missing/empty input becomes []. */
+function writeExtraRootsFile(raw) {
+  const roots = Array.isArray(raw)
+    ? raw.map((x) => String(x).trim()).filter((x) => x.length > 0)
+    : []
+  mkdirSync(LAUNCHER_DIR, { recursive: true })
+  writeIfChanged(EXTRA_ROOTS_PATH, `${JSON.stringify({ roots }, null, 2)}\n`)
+  return roots
+}
+
+/**
+ * Re-run the candidate scan + batch materialization right now (the same work
+ * the cold-start T2 refresh does) so a just-edited extra-root list shows up in
+ * the picker immediately. Best-effort: callers treat failure as non-fatal.
+ */
+function refreshCandidates() {
+  const node = detectNode()
+  return materializeSuite({
+    nodePath: node,
+    launcherDir: LAUNCHER_DIR,
+    logPath: LOG_FILE,
+    errPath: `${LOG_FILE}.err`,
+    port: readInstalledPort(),
+  })
+}
+
 /** HKCU Run key for boot autostart (the entry's presence IS the state). */
 const AUTOSTART_RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const AUTOSTART_VALUE_NAME = 'dsh-dock'
@@ -956,6 +991,55 @@ export function apply(ctx) {
       },
     }))
     ctx.effect(() => () => { for (const dispose of settingsRoutes) dispose() }, 'dsh-dock: settings routes')
+    // v0.7 extra-root routes: the settings page's "extra dsh paths" editor
+    // lists/updates the M2 adaptive-scan roots. GET returns the stored list
+    // with per-entry `matched`; SET replaces it, persists extra-roots.json and
+    // silently re-runs the candidate scan so the picker reflects the change
+    // right away. Same loopback-only trust fence as the other launcher routes.
+    const extraRootRoutes = ['get', 'set'].map(mode => webCtx.webServer.register({
+      kind: 'exact',
+      path: `/launcher/api/extra-roots/${mode}`,
+      handler: async (req, res) => {
+        const webRuntime = ctx.get('webRuntime')
+        const trustedHosts = webRuntime !== undefined && webRuntime.trustedHosts !== undefined
+          ? webRuntime.trustedHosts
+          : []
+        if (!isTrustedStopRequest(req, trustedHosts) || req.method !== 'POST') {
+          writeJson(res, 403, { ok: false, error: { code: 'forbidden', message: 'forbidden' } })
+          return
+        }
+        if (mode === 'get') {
+          writeJson(res, 200, {
+            ok: true,
+            ...readExtraRootsFile(),
+            matched: readExtraRoots(LAUNCHER_DIR).map((r) => moduleRootForUserPath(r) !== null),
+          })
+          return
+        }
+        let body = ''
+        req.setEncoding('utf8')
+        for await (const chunk of req) body += chunk
+        let parsed = {}
+        try { parsed = JSON.parse(body) } catch { /* empty/malformed body = no changes */ }
+        try {
+          const roots = writeExtraRootsFile(parsed.roots)
+          const matched = roots.map((r) => moduleRootForUserPath(r) !== null)
+          let refreshed = false
+          let refreshNote = undefined
+          try { refreshCandidates(); refreshed = true } catch (e) { refreshNote = e.message }
+          writeJson(res, 200, {
+            ok: true,
+            roots,
+            matched,
+            refreshed,
+            ...(refreshNote !== undefined ? { refreshNote } : {}),
+          })
+        } catch (e) {
+          writeJson(res, 500, { ok: false, error: { code: 'write-failed', message: e.message } })
+        }
+      },
+    }))
+    ctx.effect(() => () => { for (const dispose of extraRootRoutes) dispose() }, 'dsh-dock: extra-roots routes')
     // v0.4.0 restart route: the sidebar 重启服务器 menu item. Writes the
     // restart-request file for the resident tray to act on (the tray owns
     // the restart sequence — the host cannot restart its own death). Same

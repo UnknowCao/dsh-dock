@@ -12,11 +12,23 @@
  * batch file (start-server.cmd for the default, start-server.<id>.cmd for
  * alternates) and selection only points the exe at which one to run.
  *
- * Pure node:fs/node:path/node:crypto — no host imports.
+ * v0.6 adaptive discovery — users install dsh under different Node/global
+ * prefixes, so the scan refuses to assume one spot. M1 auto-discovers every
+ * global install the machine exposes: the running node, roaming npm, WinGet
+ * Node versions and nvm-windows version dirs, probing each unique node's
+ * authoritative `npm root -g` (with a dir-next-to-node fallback).
+ *
+ * v0.7 adds M2 — a user-maintainable extra-root list (extra-roots.json in the
+ * launcher dir, edited from the settings page): an install in any arbitrary
+ * folder is found by pointing the scan at it, never by relocating the install.
+ *
+ * Pure node:fs/node:path/node:crypto/os plus one bounded child_process spawn
+ * per discovered node (the `npm root -g` probe). No host imports.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { join, dirname, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
@@ -60,6 +72,200 @@ export function globalRoots(nodePath) {
   const roaming = join(homedir(), 'AppData', 'Roaming', 'npm', 'node_modules')
   if (!roots.includes(roaming)) roots.push(roaming)
   return roots
+}
+
+/** Locate the npm CLI bundled beside a node executable (drives `npm root -g`). */
+function npmCliFor(nodePath) {
+  const nodeDir = dirname(nodePath)
+  const candidates = [
+    join(nodeDir, '..', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]
+  for (const c of candidates) if (existsSync(c)) return c
+  return undefined
+}
+
+/**
+ * B1 · process-scoped memo of `npm root -g` probes, keyed by the canonical
+ * node path. The npm global prefix does not change mid-process (a boot), so a
+ * result — hit or miss — is safe to reuse for the whole activation, avoiding a
+ * repeated synchronous spawn on consecutive materializeSuite calls.
+ */
+const npmGlobalRootCache = new Map()
+
+/**
+ * Resolve a node executable's authoritative global module root via
+ * `npm root -g` (best-effort, bounded, memoized). Returns undefined so callers
+ * fall back to the dir-next-to-node heuristic.
+ */
+function npmGlobalRootFor(nodePath) {
+  if (npmGlobalRootCache.has(nodePath)) return npmGlobalRootCache.get(nodePath)
+  let result = undefined
+  const cli = npmCliFor(nodePath)
+  if (cli !== undefined) {
+    try {
+      const probe = spawnSync(nodePath, [cli, 'root', '-g'], {
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 8000,
+      })
+      // B3 · npm may prefix warnings or emit CRLF; trust only the first
+      // non-empty line as the single root path.
+      const stdout = (probe.stdout || '').split(/\r?\n/)
+        .map((s) => s.trim())
+        .find((s) => s.length > 0) || ''
+      if (probe.status === 0 && stdout.length > 0 && existsSync(stdout)) result = stdout
+    } catch { /* spawn unavailable */ }
+  }
+  npmGlobalRootCache.set(nodePath, result)
+  return result
+}
+
+/**
+ * Canonicalize a node executable path (follow Windows junctions/symlinks) so a
+ * path and its symlink alias — e.g. nvm's `current` → a version dir — collapse
+ * to one real entry and are probed once, not twice.
+ */
+function canonicalNode(nodePath) {
+  try { return realpathSync(nodePath) } catch { return nodePath }
+}
+
+/**
+ * M1 · every Node executable this machine exposes that could host a global
+ * dsh: the running node first, then WinGet Node LTS versions and nvm-windows
+ * version dirs (Windows). Deduplicated on the real path (symlink-aware).
+ */
+function discoveredNodeExecutables(primaryNodePath) {
+  const seen = new Set()
+  const nodes = []
+  const add = (p) => {
+    const abs = String(p)
+    if (abs.length === 0) return
+    const real = canonicalNode(abs)
+    if (!seen.has(real)) { seen.add(real); nodes.push(real) }
+  }
+  add(primaryNodePath)
+  if (process.platform === 'win32') {
+    // WinGet user installs (OpenJS.NodeJS…) — each package has node.exe.
+    try {
+      const winget = join(homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Packages')
+      if (existsSync(winget)) {
+        for (const entry of readdirSync(winget)) {
+          if (!entry.startsWith('OpenJS.NodeJS')) continue
+          const pkgDir = join(winget, entry)
+          for (const sub of readdirSync(pkgDir)) {
+            const node = join(pkgDir, sub, 'node.exe')
+            if (existsSync(node)) add(node)
+          }
+        }
+      }
+    } catch { /* winget absent */ }
+    // nvm-windows (NVM_HOME, else %APPDATA%\nvm) — each version dir hosts a node.
+    const nvmRoot = process.env.NVM_HOME || join(homedir(), 'AppData', 'Roaming', 'nvm')
+    try {
+      if (existsSync(nvmRoot)) {
+        for (const sub of readdirSync(nvmRoot)) {
+          const node = join(nvmRoot, sub, 'node.exe')
+          if (existsSync(node)) add(node)
+        }
+      }
+    } catch { /* nvm absent */ }
+  }
+  return nodes
+}
+
+/** Normalize a module-root path: collapse duplicate separators + strip a trailing one. */
+function normalizeRoot(p) {
+  return String(p).replace(/[\\/]{2,}/g, '\\').replace(/[\\/]+$/, '')
+}
+
+/**
+ * M1 · union of global module roots across every discovered node: the plain
+ * globalRoots of the running node, plus each extra node's `npm root -g`
+ * result and its dir-next-to-node heuristic. Deduplicated + normalized.
+ */
+export function allGlobalRoots(nodePath) {
+  const roots = new Set(globalRoots(nodePath).map(normalizeRoot))
+  for (const node of discoveredNodeExecutables(nodePath)) {
+    const authoritative = npmGlobalRootFor(node)
+    if (authoritative !== undefined) roots.add(normalizeRoot(authoritative))
+    roots.add(normalizeRoot(join(dirname(node), 'node_modules')))
+  }
+  return [...roots]
+}
+
+// ── M2 · user-pointed extra install roots (v0.7) ────────────────────────────
+//
+// No auto-scan can know an install a user put in an arbitrary folder. M2 adds
+// a small, user-maintainable list (extra-roots.json in the launcher dir,
+// edited from the settings page) whose entries are treated as extra module
+// roots. Reading/parsing lives HERE (single source of truth for both the
+// scan and the settings routes); no relocation is ever required.
+
+/** File (inside the launcher dir) holding the user's extra install paths. */
+export const EXTRA_ROOTS_FILE = 'extra-roots.json'
+
+/**
+ * M2 · read the user's extra install paths from extra-roots.json in the
+ * launcher dir. Accepts either a bare JSON array of path strings or an object
+ * `{ "roots": string[] }`. Missing/malformed file → empty list; a UTF-8 BOM
+ * (PowerShell/editors) is tolerated.
+ */
+export function readExtraRoots(launcherDir) {
+  const raw = []
+  try {
+    const text = readFileSync(join(launcherDir, EXTRA_ROOTS_FILE), 'utf8')
+      .replace(/^\uFEFF/, '')
+    const parsed = JSON.parse(text)
+    const arr = Array.isArray(parsed)
+      ? parsed
+      : (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.roots) ? parsed.roots : [])
+    for (const item of arr) {
+      if (typeof item === 'string' && item.trim().length > 0) raw.push(item.trim())
+    }
+  } catch { /* absent or malformed → nothing extra */ }
+  return raw
+}
+
+function isDshPackageDir(p) {
+  try {
+    const pkg = JSON.parse(readFileSync(join(p, 'package.json'), 'utf8'))
+    return pkg.name === '@deepseek-ai/dsh'
+  } catch { return false }
+}
+
+/**
+ * M2 · normalize ONE user-supplied path into the module root (the dir whose
+ * child `@deepseek-ai/dsh` lives in), or null when nothing resolves. Tolerant
+ * of several granularities: a `node_modules` root, an `<any>/node_modules`,
+ * the `@deepseek-ai` scope dir, or the `@deepseek-ai/dsh` package dir itself.
+ * Exported so the settings host route can validate an entry before persisting.
+ */
+export function moduleRootForUserPath(entry) {
+  if (typeof entry !== 'string' || entry.trim().length === 0) return null
+  const abs = resolve(entry)
+  if (existsSync(dshPkg(abs))) return normalizeRoot(abs) // …/node_modules (holds dsh)
+  if (existsSync(dshPkg(join(abs, 'node_modules')))) return normalizeRoot(join(abs, 'node_modules'))
+  if (existsSync(join(abs, 'dsh', 'package.json')) && isDshPackageDir(join(abs, 'dsh'))) {
+    return normalizeRoot(dirname(abs)) // …/@deepseek-ai scope dir
+  }
+  if (existsSync(join(abs, 'package.json')) && isDshPackageDir(abs)) return normalizeRoot(dirname(dirname(abs)))
+  return null
+}
+
+/**
+ * M2 · module roots from every stored entry that actually resolves to a dsh
+ * package. Raw entries (including currently-unresolved ones) ride along so the
+ * settings page can round-trip and flag them without losing them.
+ */
+function extraRootModuleDirs(launcherDir) {
+  const raw = readExtraRoots(launcherDir)
+  const roots = []
+  for (const entry of raw) {
+    const root = moduleRootForUserPath(entry)
+    if (root !== null && !roots.includes(root)) roots.push(root)
+  }
+  return { raw, roots }
 }
 
 /** Cached @deepseek-ai/dsh copies under every npx cache entry. */
@@ -110,7 +316,16 @@ function pathTail(p) {
  */
 export function scanCandidates({ nodePath, launcherDir, port }) {
   const found = []
-  for (const root of globalRoots(nodePath)) {
+  // M1 · every global module root across the running + discovered nodes.
+  for (const root of allGlobalRoots(nodePath)) {
+    const pkg = dshPkg(root)
+    if (existsSync(join(pkg, 'package.json'))) {
+      const bin = join(pkg, 'lib', 'bin.js')
+      found.push({ kind: 'global', pkg, bin, recipe: { args: [bin, 'web', '--no-open'], cwd: launcherDir } })
+    }
+  }
+  // M2 · module roots the user pointed to from the settings page.
+  for (const root of extraRootModuleDirs(launcherDir).roots) {
     const pkg = dshPkg(root)
     if (existsSync(join(pkg, 'package.json'))) {
       const bin = join(pkg, 'lib', 'bin.js')
