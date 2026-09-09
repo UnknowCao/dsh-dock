@@ -53,6 +53,8 @@ window.__ModuleLoader__.load({
       'setting.trayStayDesc': '双击桌面鲸鱼开窗后，鲸鱼驻留系统托盘：悬停显示服务器状态，左键秒开；关窗不停服。关闭则恢复开窗即退的短命行为。',
       'setting.autostart': '开机自启',
       'setting.autostartDesc': 'Windows 登录后静默驻留托盘并在后台预热服务器（不开窗），点托盘即开。写入当前用户注册表 Run 键，可随时关闭。',
+      'setting.groupGeneral': '通用',
+      'setting.groupScan': '候选扫描与发现',
       'setting.loading': '正在读取设置…',
       'setting.readError': '设置读取失败（插件路由不可用）',
       'setting.saveError': '保存失败，已还原',
@@ -66,6 +68,8 @@ window.__ModuleLoader__.load({
       'setting.extraRootsSaveOk': '已保存并已刷新候选',
       'setting.extraRootsSaveFail': '保存失败，请重试',
       'setting.extraRootsRefreshFail': '已保存，但候选刷新未完成',
+      'setting.extraRootsBadgeOk': '已解析',
+      'setting.extraRootsBadgeWarn': '未解析',
       'overlay.title': '服务器已完全退出',
       'overlay.body': '会话已实时保存，可双击桌面「DSH Harness」快捷方式重新启动。',
       'overlay.close': '关闭本窗口',
@@ -88,6 +92,8 @@ window.__ModuleLoader__.load({
       'setting.trayStayDesc': 'After the desktop whale opens a window, it stays in the notification area: hover shows the server state, left-click reopens instantly, closing the window never stops the server. Turn it off to restore the short-lived launcher behavior.',
       'setting.autostart': 'Start DSH on login',
       'setting.autostartDesc': 'After you sign in to Windows the whale sits in the tray and preheats the server in the background (no window); one click opens instantly. Written to the per-user Run key, can be turned off anytime.',
+      'setting.groupGeneral': 'General',
+      'setting.groupScan': 'Scan & Discovery',
       'setting.loading': 'Loading settings…',
       'setting.readError': 'Failed to read settings (plugin routes unavailable)',
       'setting.saveError': 'Save failed — reverted',
@@ -101,6 +107,8 @@ window.__ModuleLoader__.load({
       'setting.extraRootsSaveOk': 'Saved and candidates refreshed',
       'setting.extraRootsSaveFail': 'Save failed, please retry',
       'setting.extraRootsRefreshFail': 'Saved, but the candidate refresh did not complete',
+      'setting.extraRootsBadgeOk': 'Resolved',
+      'setting.extraRootsBadgeWarn': 'Unresolved',
       'overlay.title': 'Server has fully exited',
       'overlay.body': 'Sessions were saved in real time. Double-click the desktop "DSH Harness" shortcut to start again.',
       'overlay.close': 'Close this window',
@@ -199,6 +207,122 @@ window.__ModuleLoader__.load({
         '  color: var(--dsw-alias-label-danger, #e5484d);',
         '}',
         '.dsh-dock-menu-icon { display: inline-flex; flex: none; }',
+        // ── settings-page polish (v0.7 visuals) ─────────────────────────────
+        // Grouping & rows
+        '.dsh-dock-set-section-title {',
+        '  color: var(--dsw-alias-label-secondary);',
+        '  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;',
+        '  text-transform: uppercase; line-height: 16px; margin: 2px 2px 8px;',
+        '}',
+        '.dsh-dock-set-group { display: flex; flex-direction: column; gap: 8px; }',
+        '.dsh-dock-set-row {',
+        '  display: flex; align-items: center; gap: 12px;',
+        '  min-height: 48px; padding: 8px 12px;',
+        '  border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px;',
+        '  background: var(--dsw-alias-bg-layer-1);',
+        '  cursor: pointer;',
+        '  transition: background-color 120ms ease, border-color 120ms ease;',
+        '}',
+        '.dsh-dock-set-row:hover { background: var(--dsw-alias-bg-layer-2); }',
+        '.dsh-dock-set-row:focus-visible {',
+        '  outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px;',
+        '}',
+        // Pill switch
+        '.dsh-dock-set-switch {',
+        '  flex: none; position: relative; width: 38px; height: 22px;',
+        '  border-radius: 999px;',
+        '  background: var(--dsw-alias-bg-layer-2);',
+        '  border: 1px solid var(--dsw-alias-border-l2);',
+        '  transition: background-color 160ms ease, border-color 160ms ease;',
+        '}',
+        '.dsh-dock-set-switch.dsh-dock-set-switch--on {',
+        '  background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary);',
+        '}',
+        '.dsh-dock-set-switch__knob {',
+        '  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;',
+        '  border-radius: 50%; background: #fff;',
+        '  box-shadow: 0 1px 2px rgba(0,0,0,0.25);',
+        '  transition: transform 160ms ease;',
+        '}',
+        '.dsh-dock-set-switch.dsh-dock-set-switch--on .dsh-dock-set-switch__knob {',
+        '  transform: translateX(16px);',
+        '}',
+        // Path editor
+        '.dsh-dock-set-input {',
+        '  flex: 1; min-width: 0; box-sizing: border-box; height: 34px; padding: 0 10px;',
+        '  border: 1px solid var(--dsw-alias-border-l1); border-radius: 9px;',
+        '  background: var(--dsw-alias-bg-layer-1);',
+        '  color: var(--dsw-alias-label-primary); font-family: inherit; font-size: 13px;',
+        '  transition: border-color 120ms ease, box-shadow 120ms ease;',
+        '}',
+        '.dsh-dock-set-input:focus {',
+        '  outline: none; border-color: var(--dsw-alias-brand-primary);',
+        '  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary) 18%, transparent);',
+        '}',
+        '.dsh-dock-set-path-row {',
+        '  display: flex; align-items: center; gap: 8px;',
+        '  padding: 6px 8px 6px 10px; border-radius: 10px;',
+        '  border: 1px solid var(--dsw-alias-border-l1);',
+        '  background: var(--dsw-alias-bg-layer-1);',
+        '  transition: background-color 120ms ease;',
+        '}',
+        '.dsh-dock-set-path-row:hover { background: var(--dsw-alias-bg-layer-2); }',
+        '.dsh-dock-set-path {',
+        '  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;',
+        '  color: var(--dsw-alias-label-primary); font-family: ui-monospace, Consolas, monospace;',
+        '  font-size: 12px; line-height: 18px;',
+        '}',
+        '.dsh-dock-set-path-icon { flex: none; color: var(--dsw-alias-label-secondary); }',
+        '.dsh-dock-set-badge {',
+        '  flex: none; display: inline-flex; align-items: center; gap: 5px;',
+        '  height: 20px; padding: 0 8px; border-radius: 999px;',
+        '  font-size: 11px; line-height: 20px; white-space: nowrap;',
+        '}',
+        '.dsh-dock-set-badge::before {',
+        '  content: ""; width: 6px; height: 6px; border-radius: 50%;',
+        '  background: currentColor;',
+        '}',
+        '.dsh-dock-set-badge--ok {',
+        '  color: var(--dsw-alias-state-success-primary);',
+        '  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent);',
+        '}',
+        '.dsh-dock-set-badge--warn {',
+        '  color: var(--dsw-alias-state-warn-primary);',
+        '  background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 14%, transparent);',
+        '}',
+        '.dsh-dock-set-empty {',
+        '  padding: 14px 10px; text-align: center; color: var(--dsw-alias-label-secondary);',
+        '  font-size: 12px; line-height: 18px;',
+        '  border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px;',
+        '}',
+        '.dsh-dock-set-icon-btn {',
+        '  flex: none; display: inline-flex; align-items: center; justify-content: center;',
+        '  width: 26px; height: 26px; border: none; border-radius: 8px;',
+        '  background: transparent; color: var(--dsw-alias-label-secondary);',
+        '  font-size: 13px; cursor: pointer;',
+        '  transition: color 120ms ease, background-color 120ms ease;',
+        '}',
+        '.dsh-dock-set-icon-btn:hover { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); }',
+        '.dsh-dock-set-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-state-error-primary); outline-offset: 1px; }',
+        // Feedback toast
+        '@keyframes dsh-dock-toast-in {',
+        '  from { opacity: 0; transform: translateY(3px); }',
+        '  to { opacity: 1; transform: none; }',
+        '}',
+        '.dsh-dock-set-toast {',
+        '  display: flex; align-items: center; gap: 7px;',
+        '  padding: 7px 11px; border-radius: 9px;',
+        '  border: 1px solid var(--dsw-alias-border-l1);',
+        '  font-size: 12px; line-height: 18px;',
+        '  animation: dsh-dock-toast-in 160ms ease;',
+        '}',
+        '.dsh-dock-set-toast--ok { color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 30%, transparent); }',
+        '.dsh-dock-set-toast--warn { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 10%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 30%, transparent); }',
+        '.dsh-dock-set-toast--err { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, transparent); }',
+        '@keyframes dsh-dock-toast-out {',
+        '  to { opacity: 0; }',
+        '}',
+        '.dsh-dock-set-toast--leaving { animation: dsh-dock-toast-out 200ms ease forwards; }',
       ].join('\n')
       document.head.appendChild(style)
       return style
@@ -432,8 +556,8 @@ window.__ModuleLoader__.load({
       const [value, setValue] = React.useState(props.value)
       const [error, setError] = React.useState(undefined)
       React.useEffect(() => { setValue(props.value) }, [props.value])
-      const onChange = (event) => {
-        const next = event.target.checked
+      const toggle = () => {
+        const next = !value
         setValue(next)
         setError(undefined)
         Promise.resolve(props.onToggle(next))
@@ -445,25 +569,14 @@ window.__ModuleLoader__.load({
       return React.createElement(
         'div',
         {
-          style: {
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            minHeight: 44,
-            padding: '4px 0',
-          },
+          className: 'dsh-dock-set-row',
+          role: 'switch',
+          'aria-checked': value,
+          tabIndex: 0,
+          onClick: toggle,
+          onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } },
+          title: props.title,
         },
-        React.createElement('input', {
-          type: 'checkbox',
-          checked: value,
-          onChange,
-          style: {
-            width: 16,
-            height: 16,
-            flex: 'none',
-            accentColor: 'var(--dsw-alias-fill-accent, currentColor)',
-          },
-        }),
         React.createElement(
           'div',
           { style: { flex: 1, minWidth: 0 } },
@@ -471,19 +584,46 @@ window.__ModuleLoader__.load({
             style: {
               color: 'var(--dsw-alias-label-primary)',
               fontSize: 14,
+              fontWeight: 500,
               lineHeight: '22px',
             },
           }, props.title),
           React.createElement('div', {
             style: {
               color: error !== undefined
-                ? 'var(--dsw-alias-label-danger, #e5484d)'
+                ? 'var(--dsw-alias-state-error-primary)'
                 : 'var(--dsw-alias-label-secondary)',
               fontSize: 12,
               lineHeight: '18px',
             },
           }, error !== undefined ? error : props.description),
         ),
+        React.createElement(
+          'div',
+          {
+            'aria-hidden': true,
+            className: 'dsh-dock-set-switch' + (value ? ' dsh-dock-set-switch--on' : ''),
+          },
+          React.createElement('div', { className: 'dsh-dock-set-switch__knob' }),
+        ),
+      )
+    }
+
+    /** Settings-section wrapper: small-caps group title + children. */
+    function SettingsSection({ title, desc, children }) {
+      return React.createElement(
+        'div',
+        { className: 'dsh-dock-set-group' },
+        React.createElement('div', { className: 'dsh-dock-set-section-title' }, title),
+        desc !== undefined && React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 12,
+            lineHeight: '18px',
+            margin: '-2px 2px 4px',
+          },
+        }, desc),
+        children,
       )
     }
 
@@ -556,6 +696,12 @@ window.__ModuleLoader__.load({
         if (busy) return
         save(roots.filter((_, i) => i !== index))
       }
+      // Non-fatal feedback auto-dismisses after a beat; errors persist.
+      React.useEffect(() => {
+        if (note === undefined || note.kind === 'err') return undefined
+        const id = window.setTimeout(() => setNote(undefined), 2600)
+        return () => window.clearTimeout(id)
+      }, [note])
       const inputRow = React.createElement(
         'div',
         { style: { display: 'flex', gap: 8, alignItems: 'center' } },
@@ -566,19 +712,7 @@ window.__ModuleLoader__.load({
           onKeyDown: (e) => { if (e.key === 'Enter') onAdd() },
           placeholder: t('setting.extraRootsPlaceholder'),
           spellCheck: false,
-          style: {
-            flex: 1,
-            minWidth: 0,
-            boxSizing: 'border-box',
-            height: 34,
-            padding: '0 10px',
-            border: '1px solid var(--dsw-alias-border-inverted)',
-            borderRadius: 8,
-            background: 'var(--dsw-alias-bg-layer-2)',
-            color: 'var(--dsw-alias-label-primary)',
-            fontFamily: 'inherit',
-            fontSize: 13,
-          },
+          className: 'dsh-dock-set-input',
         }),
         React.createElement(
           'button',
@@ -591,52 +725,40 @@ window.__ModuleLoader__.load({
               height: 34,
               padding: '0 14px',
               border: 'none',
-              borderRadius: 8,
+              borderRadius: 9,
               background: 'var(--dsw-alias-button-elevated-fill)',
               color: 'var(--dsw-alias-label-primary)',
               fontSize: 13,
-              cursor: 'pointer',
+              fontWeight: 500,
+              cursor: busy || draft.trim().length === 0 ? 'default' : 'pointer',
+              opacity: busy || draft.trim().length === 0 ? 0.45 : 1,
+              transition: 'opacity 120ms ease',
             },
           },
           t('setting.extraRootsAdd'),
         ),
       )
+      const folderSvg = feather('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>')
       const rows = roots.length === 0
         ? [React.createElement('div', {
           key: 'empty',
-          style: {
-            color: 'var(--dsw-alias-label-secondary)',
-            fontSize: 12,
-            lineHeight: '18px',
-            padding: '4px 0',
-          },
+          className: 'dsh-dock-set-empty',
         }, t('setting.extraRootsEmpty'))]
         : roots.map((row, i) => React.createElement(
           'div',
-          { key: i, style: { display: 'flex', alignItems: 'center', gap: 8 } },
-          React.createElement(
-            'div',
-            {
-              title: row.matched ? row.path : `${row.path} — ${t('setting.extraRootsUnresolved')}`,
-              style: {
-                flex: 1,
-                minWidth: 0,
-                boxSizing: 'border-box',
-                padding: '6px 10px',
-                borderRadius: 8,
-                background: 'var(--dsw-alias-bg-layer-2)',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-                color: row.matched
-                  ? 'var(--dsw-alias-label-primary)'
-                  : 'var(--dsw-alias-label-warning, #d4a72c)',
-                fontFamily: 'monospace',
-                fontSize: 12,
-              },
-            },
-            row.path,
-          ),
+          { key: i, className: 'dsh-dock-set-path-row' },
+          React.createElement('span', {
+            className: 'dsh-dock-set-path-icon',
+            dangerouslySetInnerHTML: { __html: folderSvg },
+          }),
+          React.createElement('span', {
+            className: 'dsh-dock-set-path',
+            title: row.matched ? row.path : `${row.path} — ${t('setting.extraRootsUnresolved')}`,
+          }, row.path),
+          React.createElement('span', {
+            className: 'dsh-dock-set-badge ' + (row.matched ? 'dsh-dock-set-badge--ok' : 'dsh-dock-set-badge--warn'),
+            title: row.matched ? t('setting.extraRootsBadgeOk') : t('setting.extraRootsUnresolved'),
+          }, row.matched ? t('setting.extraRootsBadgeOk') : t('setting.extraRootsBadgeWarn')),
           React.createElement(
             'button',
             {
@@ -644,28 +766,23 @@ window.__ModuleLoader__.load({
               onClick: () => onRemove(i),
               disabled: busy,
               title: t('setting.extraRootsRemove'),
-              style: {
-                flex: 'none',
-                height: 28,
-                padding: '0 10px',
-                border: 'none',
-                borderRadius: 7,
-                background: 'transparent',
-                color: 'var(--dsw-alias-label-secondary)',
-                fontSize: 12,
-                cursor: 'pointer',
-              },
+              'aria-label': `${t('setting.extraRootsRemove')}: ${row.path}`,
+              className: 'dsh-dock-set-icon-btn',
             },
             '✕',
           ),
         ))
+      const toastGlyph = note !== undefined
+        ? (note.kind === 'ok' ? '✓' : note.kind === 'warn' ? '!' : '✕')
+        : ''
       return React.createElement(
         'div',
-        { style: { marginTop: 4 } },
+        { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
         React.createElement('div', {
           style: {
             color: 'var(--dsw-alias-label-primary)',
             fontSize: 14,
+            fontWeight: 500,
             lineHeight: '22px',
           },
         }, t('setting.extraRoots')),
@@ -674,30 +791,19 @@ window.__ModuleLoader__.load({
             color: 'var(--dsw-alias-label-secondary)',
             fontSize: 12,
             lineHeight: '18px',
-            marginBottom: 8,
           },
         }, t('setting.extraRootsDesc')),
         inputRow,
         React.createElement('div', {
-          style: {
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-            marginTop: 10,
-          },
+          style: { display: 'flex', flexDirection: 'column', gap: 6 },
         }, ...rows),
         note !== undefined && React.createElement('div', {
-          style: {
-            marginTop: 8,
-            fontSize: 12,
-            lineHeight: '18px',
-            color: note.kind === 'err'
-              ? 'var(--dsw-alias-label-danger, #e5484d)'
-              : note.kind === 'warn'
-                ? 'var(--dsw-alias-label-warning, #d4a72c)'
-                : 'var(--dsw-alias-label-primary)',
-          },
-        }, note.text),
+          role: 'status',
+          className: 'dsh-dock-set-toast dsh-dock-set-toast--' + note.kind,
+        },
+          React.createElement('span', { style: { fontWeight: 700 } }, toastGlyph),
+          note.text,
+        ),
       )
     }
 
@@ -756,26 +862,26 @@ window.__ModuleLoader__.load({
       }
       return React.createElement(
         'div',
-        { style: { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 520 } },
-        React.createElement(SettingsToggleRow, {
-          key: 'trayStay',
-          value: trayStay,
-          onToggle: onToggle('trayStay'),
-          title: t('setting.trayStay'),
-          description: t('setting.trayStayDesc'),
-        }),
-        React.createElement(SettingsToggleRow, {
-          key: 'autostart',
-          value: autostart,
-          onToggle: onToggle('autostart'),
-          title: t('setting.autostart'),
-          description: t('setting.autostartDesc'),
-        }),
-        React.createElement('div', {
-          key: 'extraRootsDivider',
-          style: { height: 1, background: 'var(--dsw-alias-border-inverted)', margin: '8px 0 2px' },
-        }),
-        React.createElement(ExtraRootsEditor, { key: 'extraRootsEditor' }),
+        { style: { display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 520 } },
+        React.createElement(SettingsSection, { key: 'general', title: t('setting.groupGeneral') },
+          React.createElement(SettingsToggleRow, {
+            key: 'trayStay',
+            value: trayStay,
+            onToggle: onToggle('trayStay'),
+            title: t('setting.trayStay'),
+            description: t('setting.trayStayDesc'),
+          }),
+          React.createElement(SettingsToggleRow, {
+            key: 'autostart',
+            value: autostart,
+            onToggle: onToggle('autostart'),
+            title: t('setting.autostart'),
+            description: t('setting.autostartDesc'),
+          }),
+        ),
+        React.createElement(SettingsSection, { key: 'scan', title: t('setting.groupScan') },
+          React.createElement(ExtraRootsEditor, { key: 'extraRootsEditor' }),
+        ),
       )
     }
 
